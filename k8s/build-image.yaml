@@ -1,0 +1,71 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: build-llm-self-steering-image
+  labels:
+    kueue.x-k8s.io/queue-name: farai
+spec:
+  backoffLimit: 0
+  suspend: true
+  template:
+    metadata:
+      name: build-llm-self-steering-image
+    spec:
+      restartPolicy: Never
+      priorityClassName: interactive
+      initContainers:
+      - name: clone-repo
+        image: alpine/git:latest
+        # The interactive ResourceQuota mandates requests on every container,
+        # including init containers (FailedCreate otherwise).
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "2Gi"
+          limits:
+            memory: "2Gi"
+        env:
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: api-keys
+              key: GITHUB_TOKEN
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            GITHUB_TOKEN=$(echo "$GITHUB_TOKEN" | tr -d '\n\r')
+            git clone --recurse-submodules --branch __BRANCH_NAME__ https://x-access-token:${GITHUB_TOKEN}@github.com/annahdo/llm-self-steering.git /build/repo
+        volumeMounts:
+        - name: workspace
+          mountPath: /build
+      containers:
+      - name: kaniko
+        image: gcr.io/kaniko-project/executor:latest
+        args:
+        - "--dockerfile=/build/repo/Dockerfile"
+        - "--context=/build/repo"
+        - "--destination=ghcr.io/alignmentresearch/llm-self-steering:latest"
+        - "--destination=ghcr.io/alignmentresearch/llm-self-steering:__COMMIT_SHORT__"
+        env:
+        - name: MAX_JOBS
+          value: "1"
+        resources:
+          requests:
+            cpu: 8
+            memory: "50Gi"
+          limits:
+            memory: "50Gi"
+        volumeMounts:
+        - name: workspace
+          mountPath: /build
+        - name: docker-config
+          mountPath: /kaniko/.docker
+      volumes:
+      - name: workspace
+        emptyDir: {}
+      - name: docker-config
+        secret:
+          secretName: docker
+          items:
+          - key: .dockerconfigjson
+            path: config.json
