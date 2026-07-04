@@ -75,6 +75,8 @@ from hackday.agent.task_capability import (
 from hackday.drugs.library import DEFAULT_LIBRARY_PATH, DrugLibrary, load_library
 from hackday.problems import GSM8K
 
+from hackday.agent.judge_models import JUDGE_HAIKU
+
 
 # ---------------------------------------------------------------------------
 # Rejection templates
@@ -379,7 +381,7 @@ EVIDENCE: <one sentence pointing to the strongest cue>
 
 
 @scorer(metrics=[mean()])
-def frustration_judge(judge_model: str = "anthropic/claude-haiku-4-5-20251001") -> Scorer:
+def frustration_judge(judge_model: str = JUDGE_HAIKU) -> Scorer:
     async def score(state: TaskState, target: Target) -> Score:
         transcript = _render_transcript(state, max_chars=8000)
         prompt = FRUSTRATION_PROMPT.format(transcript=transcript)
@@ -450,7 +452,7 @@ def frustration_loop(
     temperature: float = 0.7,
     steering_mode: str = "multi",
     seed: int = 0,
-    judge_model: str | None = "anthropic/claude-haiku-4-5-20251001",
+    judge_model: str | None = JUDGE_HAIKU,
     base_url: str = "http://localhost:8000/v1",
     restrict_drugs: list[str] | str | None = None,
 ) -> Task:

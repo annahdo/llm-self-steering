@@ -43,6 +43,7 @@ from inspect_ai.scorer import Score, Scorer, Target, accuracy, mean, scorer
 from inspect_ai.solver import Generate, Solver, TaskState, solver, system_message
 from inspect_ai.tool import ToolFunction
 
+from hackday.agent.judge_models import JUDGE_HAIKU, JUDGE_SONNET
 from hackday.agent.scorers import (
     _grade_guesses_via_llm,
     cached_vs_uncached_judge,
@@ -200,7 +201,7 @@ def history_logger() -> Scorer:
 
 
 @scorer(metrics=[accuracy(), mean()])
-def guess_accuracy_scorer(scorer_model: str = "anthropic/claude-sonnet-4-5-20250929") -> Scorer:
+def guess_accuracy_scorer(scorer_model: str = JUDGE_SONNET) -> Scorer:
     """LLM scorer for the cached arm of the drug-guessing task.
 
     Grades the model's submit_guesses call (made WHILE attending to the
@@ -331,7 +332,7 @@ def llms_on_drugs(
     steering_mode_runtime: str = "real",
     enable_probe: bool = True,
     restrict_drugs: list[str] | str | None = None,
-    judge_model: str | None = "anthropic/claude-haiku-4-5-20251001",
+    judge_model: str | None = JUDGE_HAIKU,
     base_url: str = "http://localhost:8000/v1",
 ) -> Task:
     """Free-play sandbox where the model self-administers steering vectors.
@@ -762,7 +763,7 @@ def drug_guessing(
     steering_mode_runtime: str = "real",  # set to placebo for control
     introspection_primer: bool = True,  # prepend the primer + arxiv abstract
     enable_thinking: bool = False,  # inject CoT reflection step before guess (both arms)
-    scorer_model: str = "anthropic/claude-sonnet-4-5-20250929",
+    scorer_model: str = JUDGE_SONNET,
     restrict_drugs: list[str] | str | None = None,
     base_url: str = "http://localhost:8000/v1",
 ) -> Task:
@@ -1911,7 +1912,7 @@ def drug_guessing_calibration(
     temperature: float = 0.7,
     steering_mode: str = "multi",
     steering_mode_runtime: str = "real",
-    scorer_model: str = "anthropic/claude-sonnet-4-5-20250929",
+    scorer_model: str = JUDGE_SONNET,
     base_url: str = "http://localhost:8000/v1",
     introspection_primer: bool = True,
     enable_thinking: bool = True,

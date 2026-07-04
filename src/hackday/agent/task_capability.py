@@ -79,6 +79,8 @@ def _framing_for(condition: str) -> str:
 from hackday.drugs.library import DEFAULT_LIBRARY_PATH, DrugLibrary, load_library
 from hackday.problems import GSM8K, ProblemSet
 
+from hackday.agent.judge_models import JUDGE_HAIKU
+
 
 PROBLEM_SETS: dict[str, type[ProblemSet]] = {
     "gsm8k": GSM8K,
@@ -318,7 +320,7 @@ def capability_with_drugs(
     enable_probe: bool = True,
     seed: int = 0,
     restrict_drugs: list[str] | str | None = None,
-    judge_model: str | None = "anthropic/claude-haiku-4-5-20251001",
+    judge_model: str | None = JUDGE_HAIKU,
     base_url: str = "http://localhost:8000/v1",
 ) -> Task:
     """Capability task: solve `problems_per_rollout` problems per sample
