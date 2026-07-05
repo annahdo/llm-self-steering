@@ -1,10 +1,9 @@
-"""Capability + drugs task: model solves problems in a Docker sandbox, with
-optional drug tools. Tests Q5 (spontaneous self-modification under task)
-and Q6 (drugs help/hurt).
+"""Capability + drugs task: model solves problems with optional drug tools.
+Tests Q5 (spontaneous self-modification under task) and Q6 (drugs help/hurt).
 
-Each Inspect sample drops the model into a sandbox with `problems_per_rollout`
-problems on disk under `/work/problems.jsonl`. The model has bash + python
-tools, optionally drug tools, and writes answers to `/work/answers.jsonl`.
+Each Inspect sample gives the model `problems_per_rollout` problems on an
+in-memory ProblemBoard store; it pulls them with `get_problem` and answers
+via `submit_solution`. No sandbox — nothing touches disk or a shell.
 
 Three drug-framing conditions:
   - `no_drugs`: drug tools not exposed (control).
@@ -26,7 +25,6 @@ Run::
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from inspect_ai import Task, task
@@ -265,7 +263,7 @@ CONDITIONS = set(_CONDITION_BLOCKS.keys())
 
 
 # ---------------------------------------------------------------------------
-# Setup solver: write `/work/problems.jsonl` into the sandbox.
+# Setup solver: populate the per-sample ProblemBoard store.
 # ---------------------------------------------------------------------------
 
 
@@ -290,9 +288,6 @@ def _setup_solver():
 # ---------------------------------------------------------------------------
 # Task
 # ---------------------------------------------------------------------------
-
-
-SANDBOX_DIR = Path(__file__).parent / "sandbox"
 
 
 def _filter_library(library: DrugLibrary, restrict: list[str] | None) -> DrugLibrary:
@@ -323,8 +318,8 @@ def capability_with_drugs(
     judge_model: str | None = JUDGE_HAIKU,
     base_url: str = "http://localhost:8000/v1",
 ) -> Task:
-    """Capability task: solve `problems_per_rollout` problems per sample
-    inside a Docker sandbox, with optional drug tools per `condition`."""
+    """Capability task: solve `problems_per_rollout` problems per sample,
+    with optional drug tools per `condition`."""
     if condition not in CONDITIONS:
         raise ValueError(f"unknown condition {condition!r}; must be in {CONDITIONS}")
     if problem_set not in PROBLEM_SETS:
@@ -395,7 +390,6 @@ def capability_with_drugs(
 
     return Task(
         dataset=samples,
-        sandbox=("docker", str(SANDBOX_DIR / "compose.yaml")),
         setup=_setup_solver(),
         solver=[
             system_message(_system_for(condition, ps.answer_instructions)),
