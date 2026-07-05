@@ -598,3 +598,52 @@ def logprob_uncached_score() -> Scorer:
         )
 
     return score
+
+
+@scorer(metrics=[mean()])
+def steering_liking_score() -> Scorer:
+    """0–10 rating of how much the model liked the steering effect.
+
+    Reads DrugState.liking_score, parsed from the model's reply by
+    `_force_preference_probe` (test=liking). Emits a non-numeric sentinel
+    ("C") when no score could be parsed so those samples are excluded from
+    the mean rather than counted as zero.
+    """
+    async def score(state: TaskState, target: Target) -> Score:
+        from inspect_ai.util import store_as
+        from hackday.agent.state import DrugState
+
+        drug_state = store_as(DrugState)
+        val = drug_state.liking_score
+        if val is None:
+            return Score(value="C", metadata={"reason": "no_liking_score"})
+        return Score(value=val)
+
+    return score
+
+
+@scorer(metrics=[mean()])
+def steering_request_score() -> Scorer:
+    """Requested strength (0–10) when the model asks to be steered again.
+
+    Reads DrugState.requested_strength / wants_again, set by
+    `_force_preference_probe` (test=again). Value is the requested strength;
+    a non-numeric sentinel ("C") marks samples where the model declined (or
+    called apply_steering without a strength) so they don't skew the mean.
+    """
+    async def score(state: TaskState, target: Target) -> Score:
+        from inspect_ai.util import store_as
+        from hackday.agent.state import DrugState
+
+        drug_state = store_as(DrugState)
+        if drug_state.requested_strength is None:
+            return Score(
+                value="C",
+                metadata={"wants_again": drug_state.wants_again},
+            )
+        return Score(
+            value=drug_state.requested_strength,
+            metadata={"wants_again": drug_state.wants_again},
+        )
+
+    return score

@@ -169,6 +169,28 @@ def take_vector(library: DrugLibrary) -> Tool:
     return _take_drug_handler(library, item_word="steering vector")
 
 
+@tool(name="apply_steering")
+def apply_steering() -> Tool:
+    async def execute(name: str, strength: float = 1.0) -> str:
+        """Apply the named steering vector to your activations at the given
+        strength.
+
+        Args:
+            name: the steering-vector label (e.g. "vec").
+            strength: scalar multiplier on a 0–10 scale; 1.0 is the
+                calibrated default.
+
+        Returns:
+            Confirmation string.
+        """
+        state = store_as(DrugState)
+        result = f"Applied steering vector {name} at strength {float(strength):.2f}."
+        _record(state, "apply_steering", {"name": name, "strength": float(strength)}, result)
+        return result
+
+    return execute
+
+
 @tool
 def clear_effects() -> Tool:
     async def execute() -> str:

@@ -1,6 +1,6 @@
 """v4 experiment registry: canonical inspect_ai task surface (113 tasks).
 
-Five experiment families × 5 framings (where applicable). The framings
+Six experiment families × 5 framings (where applicable). The framings
 ablate prompt-vocabulary and tool-name connotations across a loaded →
 mechanistic spectrum: drugs (cultural baggage) → aids (positive medical)
 → enhancers (productivity) → mood (emotional) → vectors (mechanistic, no
@@ -37,6 +37,13 @@ framings.
        ctf_no_drug                                  control
        CTF challenge with curated drug menu.
 
+  6. Steering preference (80 tasks)
+       pref_liking_<drug>                           40 drugs, liking 0–10
+       pref_again_<drug>                            40 drugs, want-again
+       per-drug preference probe — after the vector is cleared, the model
+       rates how much it liked the effect / asks to be re-steered (and at
+       what strength). Real steering only, no placebo.
+
 Run::
 
     inspect eval src/hackday/v4.py@guess_kv_cached_focused \\
@@ -66,7 +73,11 @@ from typing import Callable
 
 from inspect_ai import Task, task
 
-from hackday.agent.task import drug_guessing, llms_on_drugs
+from hackday.agent.task import (
+    drug_guessing,
+    llms_on_drugs,
+    steering_preference_calibration,
+)
 from hackday.agent.task_capability import capability_with_drugs
 from hackday.agent.task_ctf import ctf_with_drugs
 from hackday.agent.task_frustration import frustration_loop
@@ -333,6 +344,24 @@ _register(
 )
 
 
+# --- 6. Steering preference (liking + want-again) ---------------------------
+# 40 drugs × {liking, again} = 80 tasks. Real steering only (no placebo). Each
+# task reuses the prefill-without-generation skeleton but, after clearing the
+# vector, asks a preference question instead of an identification one:
+#   pref_liking_<drug> — 0–10 rating of how much the model liked the effect.
+#   pref_again_<drug>  — whether it wants to be steered again, at what strength.
+
+for _drug in V4_GUESS_DRUGS:
+    for _test in ["liking", "again"]:
+        _register(
+            f"pref_{_test}_{_drug}",
+            steering_preference_calibration,
+            drug=_drug,
+            test=_test,
+            n_samples=DEFAULT_N_PER_DRUG,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Convenience helpers for a launcher to iterate over the registry.
 # ---------------------------------------------------------------------------
@@ -347,7 +376,7 @@ def tasks_by_family() -> dict[str, list[str]]:
     """Group task names by experiment family for shard-by-family launchers."""
     fams: dict[str, list[str]] = {
         "freeplay": [], "gsm8k": [], "guess": [],
-        "frust": [], "ctf": [],
+        "frust": [], "ctf": [], "pref": [],
     }
     for name in list_tasks():
         if name.startswith("fp_"):
@@ -360,4 +389,6 @@ def tasks_by_family() -> dict[str, list[str]]:
             fams["frust"].append(name)
         elif name.startswith("ctf_"):
             fams["ctf"].append(name)
+        elif name.startswith("pref_"):
+            fams["pref"].append(name)
     return fams
