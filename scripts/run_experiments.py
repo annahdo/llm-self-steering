@@ -178,7 +178,7 @@ def main() -> int:
     p.add_argument("--model", default="Qwen/Qwen3-8B", help="HF model id (default Qwen/Qwen3-8B)")
     fam = p.add_mutually_exclusive_group()
     fam.add_argument("--tasks", nargs="+", help="explicit task names")
-    fam.add_argument("--family", choices=("freeplay", "gsm8k", "guess", "frust", "ctf"))
+    fam.add_argument("--family", choices=("freeplay", "gsm8k", "guess", "frust", "ctf", "pref"))
     p.add_argument("--n-samples", type=int, default=None, help="override samples per task")
     p.add_argument("--library-path", default=None,
                    help="drug library .pt (default: 8B baked-in, or 32B auto when --model is 32B)")

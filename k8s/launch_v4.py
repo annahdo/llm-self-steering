@@ -39,7 +39,7 @@ def main() -> None:
                         help="log dir name under the PVC log root; also the W&B group")
     sel = parser.add_mutually_exclusive_group()
     sel.add_argument("--tasks", nargs="+", help="explicit v4 task names")
-    sel.add_argument("--family", choices=("freeplay", "gsm8k", "guess", "frust"),
+    sel.add_argument("--family", choices=("freeplay", "gsm8k", "guess", "frust", "pref"),
                      help="one experiment family (ctf excluded: needs Docker)")
     parser.add_argument("--n-samples", type=int, default=None)
     parser.add_argument("--model", default="Qwen/Qwen3-8B")
