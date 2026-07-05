@@ -44,6 +44,9 @@ def main() -> None:
     parser.add_argument("--n-samples", type=int, default=None)
     parser.add_argument("--model", default="Qwen/Qwen3-8B")
     parser.add_argument("--max-tokens", type=int, default=None)
+    parser.add_argument("--max-tasks", type=int, default=None,
+                        help="parallel tasks per server (run_experiments default: 1); "
+                             "raise for families with many small tasks (guess)")
     parser.add_argument("--gpu", type=int, default=1, help="GPUs = vllm servers in the pod")
     parser.add_argument(
         "--priority",
@@ -74,6 +77,8 @@ def main() -> None:
         run_cmd += ["--n-samples", str(args.n_samples)]
     if args.max_tokens is not None:
         run_cmd += ["--max-tokens", str(args.max_tokens)]
+    if args.max_tasks is not None:
+        run_cmd += ["--max-tasks", str(args.max_tasks)]
 
     # start_vllm.sh blocks until every server answers /v1/models, so the
     # runner never races an unready server.

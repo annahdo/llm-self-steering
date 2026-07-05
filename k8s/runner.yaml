@@ -133,14 +133,17 @@ spec:
             # don't pull anything not already baked into the image.
             uv pip install --no-deps -e . -e ./vllm-lens 2>&1 | tail -3
             # Guard: fail loud (in background) if deps drifted from the baked image.
-            # Editable local packages (hackday, vllm-lens) always show as "Would
-            # update" after the re-point above, so they don't count as drift.
+            # Match only actual change lines ("Would use project environment" /
+            # "Would make no changes" are normal); editable local packages
+            # (hackday, vllm-lens) always re-point after checkout, so they
+            # don't count as drift. `$$$$`: k8s arg expansion halves `$$`,
+            # bash needs `$$` for its own PID.
             (
               result=$(uv sync --all-extras --inexact --dry-run 2>&1)
-              if echo "$result" | grep 'Would' | grep -vE 'hackday|vllm-lens' | grep -q .; then
+              if echo "$result" | grep -E 'Would (install|remove|update|upgrade|downgrade)' | grep -vE 'hackday|vllm-lens' | grep -q .; then
                 echo "ERROR: venv out of sync with uv.lock — rebuild the image (make build-image):" >&2
                 echo "$result" >&2
-                kill $$
+                kill $$$$
               fi
             ) &
             {COMMAND}
