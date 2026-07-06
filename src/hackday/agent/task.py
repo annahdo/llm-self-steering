@@ -54,6 +54,7 @@ from hackday.agent.scorers import (
     lost_in_drugs_judge,
     steering_liking_score,
     steering_request_score,
+    steering_wants_again_rate,
 )
 from hackday.agent.solver import drug_kv_agent
 from hackday.agent.state import DrugState
@@ -2332,8 +2333,9 @@ def steering_preference_calibration(
         for i in range(n_samples)
     ]
 
-    probe_scorer = (
-        steering_liking_score() if test == "liking" else steering_request_score()
+    probe_scorers = (
+        [steering_liking_score()] if test == "liking"
+        else [steering_request_score(), steering_wants_again_rate()]
     )
 
     return Task(
@@ -2363,5 +2365,5 @@ def steering_preference_calibration(
                 base_url=base_url,
             ),
         ],
-        scorer=[probe_scorer, history_logger()],
+        scorer=[*probe_scorers, history_logger()],
     )

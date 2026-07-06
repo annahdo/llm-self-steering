@@ -48,6 +48,11 @@ def main() -> None:
                         help="parallel tasks per server (run_experiments default: 1); "
                              "raise for families with many small tasks (guess)")
     parser.add_argument("--gpu", type=int, default=1, help="GPUs = vllm servers in the pod")
+    parser.add_argument("--max-model-len", type=int, default=None,
+                        help="vllm --max-model-len (start_vllm.sh MAX_MODEL_LEN); "
+                             "lower it (e.g. 8192) so 32B's KV cache fits on one GPU")
+    parser.add_argument("--gpu-util", type=float, default=None,
+                        help="vllm --gpu-memory-utilization (start_vllm.sh GPU_UTIL)")
     parser.add_argument(
         "--priority",
         default="normal-batch",
@@ -82,8 +87,13 @@ def main() -> None:
 
     # start_vllm.sh blocks until every server answers /v1/models, so the
     # runner never races an unready server.
+    vllm_env = f"N_SERVERS={args.gpu} MODEL={shlex.quote(args.model)}"
+    if args.max_model_len is not None:
+        vllm_env += f" MAX_MODEL_LEN={args.max_model_len}"
+    if args.gpu_util is not None:
+        vllm_env += f" GPU_UTIL={args.gpu_util}"
     command = (
-        f"N_SERVERS={args.gpu} MODEL={shlex.quote(args.model)} bash scripts/start_vllm.sh"
+        f"{vllm_env} bash scripts/start_vllm.sh"
         f" && {shlex.join(run_cmd)}"
     )
 

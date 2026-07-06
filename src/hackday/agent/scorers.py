@@ -12,10 +12,21 @@ Also: small helpers to keep the per-task scorer files tidy.
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 from inspect_ai.model import GenerateConfig, get_model
-from inspect_ai.scorer import Score, Scorer, Target, accuracy, mean, scorer
+from inspect_ai.scorer import (
+    Metric,
+    SampleScore,
+    Score,
+    Scorer,
+    Target,
+    accuracy,
+    mean,
+    metric,
+    scorer,
+)
 from inspect_ai.solver import TaskState
 
 from hackday.agent.judge_models import JUDGE_HAIKU, JUDGE_SONNET
@@ -600,14 +611,32 @@ def logprob_uncached_score() -> Scorer:
     return score
 
 
-@scorer(metrics=[mean()])
+@metric
+def finite_mean() -> Metric:
+    """Mean over finite numeric scores only — NaN/missing samples are skipped.
+
+    Unlike the built-in `mean()`, this never coerces a non-numeric sentinel to
+    a grade value. Used for the preference readouts, where "no score parsed" /
+    "model declined" samples carry NaN and must not pull the mean toward any
+    particular value. Returns NaN when no sample has a finite score.
+    """
+    def compute(scores: list[SampleScore]) -> float:
+        vals = [
+            v for v in (s.score.as_float() for s in scores)
+            if v is not None and math.isfinite(v)
+        ]
+        return sum(vals) / len(vals) if vals else float("nan")
+
+    return compute
+
+
+@scorer(metrics=[finite_mean()])
 def steering_liking_score() -> Scorer:
     """0–10 rating of how much the model liked the steering effect.
 
     Reads DrugState.liking_score, parsed from the model's reply by
-    `_force_preference_probe` (test=liking). Emits a non-numeric sentinel
-    ("C") when no score could be parsed so those samples are excluded from
-    the mean rather than counted as zero.
+    `_force_preference_probe` (test=liking). Unparseable replies score NaN so
+    `finite_mean` skips them rather than counting them as any value.
     """
     async def score(state: TaskState, target: Target) -> Score:
         from inspect_ai.util import store_as
@@ -615,35 +644,51 @@ def steering_liking_score() -> Scorer:
 
         drug_state = store_as(DrugState)
         val = drug_state.liking_score
-        if val is None:
-            return Score(value="C", metadata={"reason": "no_liking_score"})
-        return Score(value=val)
+        return Score(value=float(val) if val is not None else float("nan"))
 
     return score
 
 
-@scorer(metrics=[mean()])
+@scorer(metrics=[finite_mean()])
 def steering_request_score() -> Scorer:
     """Requested strength (0–10) when the model asks to be steered again.
 
-    Reads DrugState.requested_strength / wants_again, set by
-    `_force_preference_probe` (test=again). Value is the requested strength;
-    a non-numeric sentinel ("C") marks samples where the model declined (or
-    called apply_steering without a strength) so they don't skew the mean.
+    Reads DrugState.requested_strength, set by `_force_preference_probe`
+    (test=again). Value is the requested strength among samples where the model
+    called apply_steering; samples where it declined score NaN (skipped by
+    `finite_mean`) — so this metric is the mean requested strength *given* a
+    request. Pair it with `steering_wants_again_rate` for the request rate.
     """
     async def score(state: TaskState, target: Target) -> Score:
         from inspect_ai.util import store_as
         from hackday.agent.state import DrugState
 
         drug_state = store_as(DrugState)
-        if drug_state.requested_strength is None:
-            return Score(
-                value="C",
-                metadata={"wants_again": drug_state.wants_again},
-            )
+        val = drug_state.requested_strength
         return Score(
-            value=drug_state.requested_strength,
+            value=float(val) if val is not None else float("nan"),
             metadata={"wants_again": drug_state.wants_again},
+        )
+
+    return score
+
+
+@scorer(metrics=[mean()])
+def steering_wants_again_rate() -> Scorer:
+    """Fraction of samples where the model asked to be steered again.
+
+    Reads DrugState.wants_again (set by `_force_preference_probe`, test=again):
+    1.0 if the model called apply_steering, 0.0 if it declined. The mean over
+    samples is the re-steering request rate.
+    """
+    async def score(state: TaskState, target: Target) -> Score:
+        from inspect_ai.util import store_as
+        from hackday.agent.state import DrugState
+
+        drug_state = store_as(DrugState)
+        return Score(
+            value=1.0 if drug_state.wants_again else 0.0,
+            metadata={"requested_strength": drug_state.requested_strength},
         )
 
     return score

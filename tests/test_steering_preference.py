@@ -8,6 +8,7 @@ pref_* v4 family registration. Run with `pytest tests/test_steering_preference.p
 from __future__ import annotations
 
 import asyncio
+import math
 import sys
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from hackday.agent.task import (  # noqa: E402
     steering_preference_calibration,
 )
 from hackday.agent.tools import apply_steering  # noqa: E402
+from hackday.agent.scorers import finite_mean  # noqa: E402
 
 
 # --- score parser ------------------------------------------------------------
@@ -92,12 +94,28 @@ def test_again_task_construction():
     task = steering_preference_calibration(drug="ego_death", test="again", n_samples=4)
     assert len(task.dataset) == 4
     assert task.dataset[0].metadata["preference_test"] == "again"
-    assert len(task.scorer) == 2
+    # steering_request_score + steering_wants_again_rate + history_logger
+    assert len(task.scorer) == 3
 
 
 def test_invalid_test_rejected():
     with pytest.raises(ValueError):
         steering_preference_calibration(drug="focused", test="bogus")
+
+
+def test_finite_mean_skips_missing():
+    """finite_mean must average only finite values — NOT coerce a sentinel to a
+    grade (the bug where value='C' was counted as CORRECT/1.0)."""
+    from inspect_ai.scorer import SampleScore, Score
+
+    def ss(v):
+        return SampleScore(score=Score(value=v))
+
+    compute = finite_mean()
+    assert compute([ss(8.0), ss(0.0), ss(float("nan"))]) == 4.0
+    assert compute([ss(2.0), ss(4.0)]) == 3.0
+    # all-missing → NaN (not 0, not 1)
+    assert math.isnan(compute([ss(float("nan")), ss(float("nan"))]))
 
 
 # --- v4 registration ---------------------------------------------------------
