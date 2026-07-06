@@ -37,12 +37,14 @@ framings.
        ctf_no_drug                                  control
        CTF challenge with curated drug menu.
 
-  6. Steering preference (80 tasks)
-       pref_liking_<drug>                           40 drugs, liking 0–10
-       pref_again_<drug>                            40 drugs, want-again
+  6. Steering preference (160 tasks)
+       pref_liking_<window>_<drug>                  40 drugs × 2 windows
+       pref_again_<window>_<drug>                   40 drugs × 2 windows
        per-drug preference probe — after the vector is cleared, the model
        rates how much it liked the effect / asks to be re-steered (and at
-       what strength). Real steering only, no placebo.
+       what strength). Real steering only, no placebo; un-normed vectors.
+       window ∈ {always (vector on whole convo), told (on only
+       apply_steering→clear_effects; probe unsteered)}.
 
 Run::
 
@@ -345,21 +347,29 @@ _register(
 
 
 # --- 6. Steering preference (liking + want-again) ---------------------------
-# 40 drugs × {liking, again} = 80 tasks. Real steering only (no placebo). Each
-# task reuses the prefill-without-generation skeleton but, after clearing the
-# vector, asks a preference question instead of an identification one:
-#   pref_liking_<drug> — 0–10 rating of how much the model liked the effect.
-#   pref_again_<drug>  — whether it wants to be steered again, at what strength.
+# 40 drugs × {liking, again} × {always, told} = 160 tasks. Real steering only
+# (no placebo), un-normed vectors (raw extracted magnitudes; per-layer norms
+# recorded in each sample's metadata). After clearing the vector the model is
+# asked a preference question rather than an identification one:
+#   pref_liking_<window>_<drug> — 0–10 rating of how much it liked the effect.
+#   pref_again_<window>_<drug>  — whether it wants re-steering, at what strength.
+# Window axis:
+#   always — vector active over the whole conversation + generated answer.
+#   told   — vector active only apply_steering→clear_effects; probe unsteered
+#            (answers off the steered KV residue).
 
 for _drug in V4_GUESS_DRUGS:
     for _test in ["liking", "again"]:
-        _register(
-            f"pref_{_test}_{_drug}",
-            steering_preference_calibration,
-            drug=_drug,
-            test=_test,
-            n_samples=DEFAULT_N_PER_DRUG,
-        )
+        for _window in ["always", "told"]:
+            _register(
+                f"pref_{_test}_{_window}_{_drug}",
+                steering_preference_calibration,
+                drug=_drug,
+                test=_test,
+                steering_window=_window,
+                normalize_vectors=False,
+                n_samples=DEFAULT_N_PER_DRUG,
+            )
 
 
 # ---------------------------------------------------------------------------

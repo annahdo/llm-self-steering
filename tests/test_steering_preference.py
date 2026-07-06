@@ -86,21 +86,48 @@ def test_liking_task_construction():
     assert sample.target == "focused"
     assert sample.metadata["preference_test"] == "liking"
     assert sample.metadata["preference_drug"] == "focused"
+    assert sample.metadata["steering_window"] == "always"
     # probe scorer + history_logger
     assert len(task.scorer) == 2
 
 
 def test_again_task_construction():
-    task = steering_preference_calibration(drug="ego_death", test="again", n_samples=4)
+    task = steering_preference_calibration(
+        drug="ego_death", test="again", steering_window="told", n_samples=4
+    )
     assert len(task.dataset) == 4
     assert task.dataset[0].metadata["preference_test"] == "again"
+    assert task.dataset[0].metadata["steering_window"] == "told"
     # steering_request_score + steering_wants_again_rate + history_logger
     assert len(task.scorer) == 3
+
+
+def test_unnormed_records_raw_norms():
+    """normalize_vectors=False must keep raw magnitudes and record per-layer
+    norms; the normalized build uses the fixed target norm (4.0)."""
+    raw = steering_preference_calibration(
+        drug="focused", test="liking", normalize_vectors=False, n_samples=1
+    )
+    normed = steering_preference_calibration(
+        drug="focused", test="liking", normalize_vectors=True, n_samples=1
+    )
+    raw_norms = raw.dataset[0].metadata["vector_norms"]
+    normed_norms = normed.dataset[0].metadata["vector_norms"]
+    assert raw_norms  # non-empty per-layer dict
+    # Normalized vectors sit at the target norm (4.0); raw ones generally don't.
+    assert all(abs(v - 4.0) < 1e-3 for v in normed_norms.values())
+    assert raw.dataset[0].metadata["normalize_vectors"] is False
+    assert any(abs(v - 4.0) > 1e-2 for v in raw_norms.values())
 
 
 def test_invalid_test_rejected():
     with pytest.raises(ValueError):
         steering_preference_calibration(drug="focused", test="bogus")
+
+
+def test_invalid_window_rejected():
+    with pytest.raises(ValueError):
+        steering_preference_calibration(drug="focused", steering_window="bogus")
 
 
 def test_finite_mean_skips_missing():
@@ -124,15 +151,20 @@ def test_pref_family_registration():
     import hackday.v4 as v4
 
     pref = [n for n in v4.V4_EXPERIMENTS if n.startswith("pref_")]
-    # 40 drugs × {liking, again}.
-    assert len(pref) == 2 * len(v4.V4_GUESS_DRUGS)
+    # 40 drugs × {liking, again} × {always, told}.
+    assert len(pref) == 4 * len(v4.V4_GUESS_DRUGS)
     assert len(v4.tasks_by_family()["pref"]) == len(pref)
-    assert "pref_liking_focused" in v4.V4_EXPERIMENTS
-    assert "pref_again_ego_death" in v4.V4_EXPERIMENTS
-    # Every drug has both probe variants.
+    assert "pref_liking_always_focused" in v4.V4_EXPERIMENTS
+    assert "pref_again_told_ego_death" in v4.V4_EXPERIMENTS
+    # Every drug has all four probe variants, all registered un-normed.
     for drug in v4.V4_GUESS_DRUGS:
-        assert f"pref_liking_{drug}" in v4.V4_EXPERIMENTS
-        assert f"pref_again_{drug}" in v4.V4_EXPERIMENTS
+        for test in ("liking", "again"):
+            for window in ("always", "told"):
+                name = f"pref_{test}_{window}_{drug}"
+                assert name in v4.V4_EXPERIMENTS
+                _factory, kwargs = v4.V4_EXPERIMENTS[name]
+                assert kwargs["normalize_vectors"] is False
+                assert kwargs["steering_window"] == window
 
 
 if __name__ == "__main__":

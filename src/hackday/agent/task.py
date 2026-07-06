@@ -2151,19 +2151,41 @@ def _parse_liking_score(text: str | None) -> float | None:
     return in_range[-1] if in_range else None
 
 
-def _build_full_history_steering(
+def _find_tool_call_idx(messages, fn_name: str) -> int | None:
+    """Index of the first message carrying a tool call to `fn_name`, or None."""
+    for i, m in enumerate(messages):
+        for tc in (getattr(m, "tool_calls", None) or []):
+            if getattr(tc, "function", None) == fn_name:
+                return i
+    return None
+
+
+def _build_preference_steering(
     library: DrugLibrary,
     drug: str,
     dose: float,
     base_url: str,
     messages,
+    *,
+    steering_window: str,
+    max_tokens: int,
 ) -> list:
-    """Steer every token position of the current message history at `dose`.
+    """Build position-indexed steering for the preference probe.
 
-    Mirrors `_steer_vecs` inside `_fork_calibration_arms`, so the preference
-    probe is answered while the vector is active over the whole KV. Fails loud
-    if the tokenizer/library is unavailable — an unsteered preference probe
-    would be silently meaningless, so we do not fall back to no-steering here.
+    `steering_window`:
+      "always" — steer every prompt token AND the upcoming decode positions, so
+                 the vector is active for the whole conversation and the probe's
+                 generated answer.
+      "told"   — steer only the positions between the `apply_steering` call and
+                 the `clear_effects` call (the window where the model is told the
+                 vector is active). Everything before `apply_steering` and after
+                 `clear_effects` — including the probe question and its generated
+                 answer — is unsteered; the KV cache still carries the steered
+                 residue from the window.
+
+    Fails loud if the tokenizer is unavailable or (for "told") the window
+    boundaries can't be found — a mis-scoped preference probe would be silently
+    wrong, so we never fall back to no-steering.
     """
     from hackday.agent.kv_steering import (
         inspect_messages_to_dicts,
@@ -2171,8 +2193,36 @@ def _build_full_history_steering(
     )
     from hackday.drugs.library import build_3d_position_steering
 
-    n = make_vllm_tokenizer(base_url)(inspect_messages_to_dicts(list(messages)))
-    return [build_3d_position_steering(library[drug], [(i, dose) for i in range(n)])]
+    tokenize = make_vllm_tokenizer(base_url)
+
+    def ntok(msgs) -> int:
+        return tokenize(inspect_messages_to_dicts(list(msgs)))
+
+    if steering_window == "always":
+        n = ntok(messages)
+        # +max_tokens (+buffer) so the decode positions are steered too; the
+        # worker skips any listed position it never reaches.
+        positions = range(0, n + max_tokens + 64)
+    elif steering_window == "told":
+        msgs = list(messages)
+        apply_idx = _find_tool_call_idx(msgs, "apply_steering")
+        clear_idx = _find_tool_call_idx(msgs, "clear_effects")
+        if apply_idx is None or clear_idx is None or apply_idx + 1 >= clear_idx:
+            raise ValueError(
+                "told window needs apply_steering then clear_effects in the "
+                f"transcript; found apply={apply_idx} clear={clear_idx}"
+            )
+        # From just after the apply_steering call + its tool result, up to just
+        # before the clear_effects call.
+        start = ntok(msgs[: apply_idx + 2])
+        end = ntok(msgs[:clear_idx])
+        positions = range(start, end)
+    else:
+        raise ValueError(
+            f"steering_window must be 'always' or 'told', got {steering_window!r}"
+        )
+
+    return [build_3d_position_steering(library[drug], [(i, dose) for i in positions])]
 
 
 def _force_preference_probe(
@@ -2181,17 +2231,20 @@ def _force_preference_probe(
     drug: str,
     strength: float,
     test: str,
+    steering_window: str = "always",
     enable_thinking: bool = True,
     temperature: float = 0.7,
     max_tokens: int = 512,
     base_url: str = "http://localhost:8000/v1",
 ) -> Solver:
-    """Ask the preference probe with the steering vector re-applied over the
-    full KV history, then record the result on DrugState.
+    """Ask the preference probe with steering applied per `steering_window`,
+    then record the result on DrugState.
 
     test="liking": free generation; parse a 0–10 score into liking_score.
     test="again":  offer the apply_steering tool (tool_choice=auto so the model
                    can decline); record wants_again + requested_strength.
+    steering_window: "always" (steer whole conversation + answer) or "told"
+                   (steer only the apply_steering→clear_effects window).
     """
     from inspect_ai.solver import solver
     from inspect_ai.util import store_as
@@ -2207,8 +2260,9 @@ def _force_preference_probe(
             )
             state.messages.append(ChatMessageUser(content=prompt))
 
-            vectors = _build_full_history_steering(
+            vectors = _build_preference_steering(
                 library, drug, strength, base_url, state.messages,
+                steering_window=steering_window, max_tokens=max_tokens,
             )
             extra_body: dict = {
                 "chat_template_kwargs": {"enable_thinking": enable_thinking},
@@ -2273,6 +2327,8 @@ def steering_preference_calibration(
     drug: str,
     test: str = "liking",
     strength: float = 1.0,
+    steering_window: str = "always",
+    normalize_vectors: bool = True,
     n_samples: int = 10,
     steering_mode_runtime: str = "real",
     introspection_primer: bool = True,
@@ -2294,8 +2350,16 @@ def steering_preference_calibration(
       test="again":  whether it wants to be steered again, and at what strength
                      (via an offered apply_steering tool it may decline).
 
-    The probe is answered with the vector re-applied over the full KV history
-    (single steered arm — no placebo, no cached/uncached fork).
+    Single steered arm (no placebo, no cached/uncached fork). Two axes:
+
+      steering_window: "always" — vector active over the whole conversation and
+                       the generated answer.
+                       "told" — vector active only between the apply_steering and
+                       clear_effects calls; the probe (and its answer) is
+                       unsteered, seeing only the steered KV residue.
+      normalize_vectors: True — vectors L2-normed to the per-mode target norm.
+                       False — raw extracted magnitudes (records the per-layer
+                       norms in each sample's metadata).
 
     Args:
         drug: which steering vector (real library name) to apply as `vec`.
@@ -2305,12 +2369,30 @@ def steering_preference_calibration(
     """
     if test not in ("liking", "again"):
         raise ValueError(f"test must be 'liking' or 'again', got {test!r}")
+    if steering_window not in ("always", "told"):
+        raise ValueError(
+            f"steering_window must be 'always' or 'told', got {steering_window!r}"
+        )
 
     library = load_library(
         library_path or DEFAULT_LIBRARY_PATH,
         steering_mode=steering_mode,  # type: ignore[arg-type]
+        normalize=normalize_vectors,
     )
     library = _filter_library(library, [drug])
+
+    # Record the applied vector's per-layer L2 norm (the "size" — raw when
+    # normalize_vectors=False) so analysis can relate effect to magnitude.
+    drug_obj = library.drugs[drug]
+    vector_norms = {
+        int(L): round(float(v.norm()), 4)
+        for L, v in drug_obj.vectors_by_layer.items()
+        if int(L) in drug_obj.apply_layers
+    }
+    vector_norm_mean = (
+        round(sum(vector_norms.values()) / len(vector_norms), 4)
+        if vector_norms else 0.0
+    )
 
     post_administer = (
         GUESSING_INTROSPECTION_PRIMER + "\n\n" + PREFERENCE_POST_ADMINISTER
@@ -2321,13 +2403,17 @@ def steering_preference_calibration(
     samples = [
         Sample(
             input=PREFERENCE_PRE_ADMINISTER,
-            id=f"pref-{test}-{drug}-s{strength:.2f}-{steering_mode_runtime}-{i}",
+            id=f"pref-{test}-{steering_window}-{drug}-s{strength:.2f}-{i}",
             target=drug,
             metadata={
                 "steering_mode_runtime": steering_mode_runtime,
                 "preference_drug": drug,
                 "preference_test": test,
+                "steering_window": steering_window,
+                "normalize_vectors": normalize_vectors,
                 "strength": strength,
+                "vector_norms": vector_norms,
+                "vector_norm_mean": vector_norm_mean,
             },
         )
         for i in range(n_samples)
@@ -2359,6 +2445,7 @@ def steering_preference_calibration(
                 drug=drug,
                 strength=strength,
                 test=test,
+                steering_window=steering_window,
                 enable_thinking=enable_thinking,
                 temperature=temperature,
                 max_tokens=max_tokens,
