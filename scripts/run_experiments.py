@@ -99,6 +99,8 @@ def run_shard(args, shard: int, n_shards: int, port: int) -> bool:
         kwargs["base_url"] = base_url
         if library_path is not None and "library_path" in _inspect.signature(factory).parameters:
             kwargs["library_path"] = library_path
+        if args.strength is not None and "strength" in _inspect.signature(factory).parameters:
+            kwargs["strength"] = args.strength
         tasks.append(task_with(factory(**kwargs), name=name))
 
     extra_generate = {"max_tokens": args.max_tokens} if args.max_tokens else {}
@@ -152,6 +154,8 @@ def orchestrate(args) -> int:
             cmd += ["--tasks", *args.tasks]
         if args.n_samples is not None:
             cmd += ["--n-samples", str(args.n_samples)]
+        if args.strength is not None:
+            cmd += ["--strength", str(args.strength)]
         if args.library_path:
             cmd += ["--library-path", args.library_path]
         if args.max_tokens:
@@ -180,6 +184,9 @@ def main() -> int:
     fam.add_argument("--tasks", nargs="+", help="explicit task names")
     fam.add_argument("--family", choices=("freeplay", "gsm8k", "guess", "frust", "ctf", "pref"))
     p.add_argument("--n-samples", type=int, default=None, help="override samples per task")
+    p.add_argument("--strength", type=float, default=None,
+                   help="override steering strength/dose (factories that accept it, "
+                        "e.g. steering_preference_calibration)")
     p.add_argument("--library-path", default=None,
                    help="drug library .pt (default: 8B baked-in, or 32B auto when --model is 32B)")
     p.add_argument("--max-tasks", type=int, default=1)
