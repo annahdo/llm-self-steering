@@ -101,6 +101,8 @@ def run_shard(args, shard: int, n_shards: int, port: int) -> bool:
             kwargs["library_path"] = library_path
         if args.strength is not None and "strength" in _inspect.signature(factory).parameters:
             kwargs["strength"] = args.strength
+        if args.normalize_vectors is not None and "normalize_vectors" in _inspect.signature(factory).parameters:
+            kwargs["normalize_vectors"] = args.normalize_vectors
         tasks.append(task_with(factory(**kwargs), name=name))
 
     extra_generate = {"max_tokens": args.max_tokens} if args.max_tokens else {}
@@ -156,6 +158,8 @@ def orchestrate(args) -> int:
             cmd += ["--n-samples", str(args.n_samples)]
         if args.strength is not None:
             cmd += ["--strength", str(args.strength)]
+        if args.normalize_vectors is not None:
+            cmd += ["--normalize-vectors" if args.normalize_vectors else "--no-normalize-vectors"]
         if args.library_path:
             cmd += ["--library-path", args.library_path]
         if args.max_tokens:
@@ -187,6 +191,9 @@ def main() -> int:
     p.add_argument("--strength", type=float, default=None,
                    help="override steering strength/dose (factories that accept it, "
                         "e.g. steering_preference_calibration)")
+    p.add_argument("--normalize-vectors", action=argparse.BooleanOptionalAction, default=None,
+                   help="override vector normalization: --normalize-vectors (L2 to "
+                        "target norm 4.0) / --no-normalize-vectors (raw magnitudes)")
     p.add_argument("--library-path", default=None,
                    help="drug library .pt (default: 8B baked-in, or 32B auto when --model is 32B)")
     p.add_argument("--max-tasks", type=int, default=1)

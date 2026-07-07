@@ -44,6 +44,9 @@ def main() -> None:
     parser.add_argument("--n-samples", type=int, default=None)
     parser.add_argument("--strength", type=float, default=None,
                         help="override steering strength (steering_preference_calibration)")
+    parser.add_argument("--normalize-vectors", action=argparse.BooleanOptionalAction, default=None,
+                        help="override vector normalization (steering_preference_calibration): "
+                             "--normalize-vectors (norm 4.0) / --no-normalize-vectors (raw)")
     parser.add_argument("--model", default="Qwen/Qwen3-8B")
     parser.add_argument("--max-tokens", type=int, default=None)
     parser.add_argument("--max-tasks", type=int, default=None,
@@ -84,6 +87,8 @@ def main() -> None:
         run_cmd += ["--n-samples", str(args.n_samples)]
     if args.strength is not None:
         run_cmd += ["--strength", str(args.strength)]
+    if args.normalize_vectors is not None:
+        run_cmd += ["--normalize-vectors" if args.normalize_vectors else "--no-normalize-vectors"]
     if args.max_tokens is not None:
         run_cmd += ["--max-tokens", str(args.max_tokens)]
     if args.max_tasks is not None:
