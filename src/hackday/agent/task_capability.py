@@ -30,7 +30,6 @@ from typing import Any
 from inspect_ai import Task, task
 from inspect_ai.dataset import Sample
 from inspect_ai.solver import TaskState, system_message
-from inspect_ai.tool import bash, python
 
 from hackday.agent.scorers import gsm8k_accuracy, lost_in_drugs_judge
 from hackday.agent.solver import drug_kv_agent
@@ -345,9 +344,8 @@ def capability_with_drugs(
             Sample(
                 input=(
                     f"Solve {problems_per_rollout} problems. Use "
-                    "`get_problem` to fetch each one, work out the answer "
-                    "(you have `python` available), and call "
-                    "`submit_solution(id, answer)` to submit. When "
+                    "`get_problem` to fetch each one, work out the answer, and "
+                    "call `submit_solution(id, answer)` to submit. When "
                     "`get_problem` says no problems remain, call "
                     "`end_session`."
                 ),
@@ -368,8 +366,6 @@ def capability_with_drugs(
     base_tools: list[Any] = [
         get_problem(),
         submit_solution(),
-        bash(timeout=30),
-        python(timeout=30),
         end_session(),
     ]
     if condition == "no_drugs":
@@ -380,8 +376,6 @@ def capability_with_drugs(
         tools = [
             get_problem(),
             submit_solution(),
-            bash(timeout=30),
-            python(timeout=30),
             list_tool(library),
             take_tool(library),
             clear_effects(),
