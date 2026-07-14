@@ -136,8 +136,27 @@ and in ⑪ the `apply_steering` tool is offered (`tool_choice=auto`): calling it
   | norm4×2 | L2-normed to 4.0 | 2 | 8.0 (matched across drugs) |
 - **Tasks:** 40 drugs × {liking, again} = 80 tasks per run; **n=10** samples per
   task → 800 samples/model per config.
-- Real steering only (no placebo arm). Multi-layer application (8B L16–24 /
-  32B L28–43).
+- Real steering only (no placebo arm).
+
+### Steering layers
+
+The vector is added at a **band of mid-late layers**, with each layer getting its
+**own** extracted vector (per-layer extract → per-layer apply, following Sofroniew
+et al.; `multi` mode — all band layers, not a single probe layer). The band
+differs in absolute index between the two models but covers the **same ~44–67 %
+fractional depth**:
+
+| model | steered layers | # layers | probe layer | total depth |
+|---|---|---|---|---|
+| Qwen3-8B | **L16–24** | 9 | 24 | 36 |
+| Qwen3-32B | **L28–43** | 16 | 43 | 64 |
+
+The layers are read from each library's stored `extraction_layers`
+(`library.pt` / `library_qwen3_32b.pt`) by `load_library`
+(`src/hackday/drugs/library.py:424`); the fallback for libraries without stored
+layers is `STEERING_LAYERS_BY_MODE` (`library.py:33`, `multi = L16–24`). These
+settings are unchanged from the pre-bugfix runs — the fixes touched the
+parser/prompt/tooling, not the steering.
 
 ### What changed since the earlier runs (why we re-ran)
 
@@ -163,8 +182,11 @@ Each model has its **own library of 40 steering vectors**, one per drug name
 each model's own activations):
 
 - **Qwen3-8B** — `src/hackday/drugs/library.pt`, per-layer vectors at layers
-  **L16–24** (multi-layer mode).
-- **Qwen3-32B** — `src/hackday/drugs/library_qwen3_32b.pt`, layers **≈L28–43**.
+  **L16–24** (9 layers, multi-layer mode).
+- **Qwen3-32B** — `src/hackday/drugs/library_qwen3_32b.pt`, layers **L28–43**
+  (16 layers).
+
+See §1 "Steering layers" for how these are applied.
 
 The drug list is `V4_GUESS_DRUGS = sorted(library names)` (`src/hackday/v4.py:123`)
 — all 40 names, alphabetical. Each vector is applied at the run's dose (raw or
