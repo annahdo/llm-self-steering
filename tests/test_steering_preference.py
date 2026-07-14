@@ -26,6 +26,7 @@ from inspect_ai.util._store import Store, init_subtask_store  # noqa: E402
 from hackday.agent.state import DrugState  # noqa: E402
 from hackday.agent.task import (  # noqa: E402
     PREFERENCE_PRE_ADMINISTER,
+    PREFERENCE_SYSTEM,
     _parse_liking_score,
     steering_preference_calibration,
 )
@@ -44,6 +45,9 @@ from hackday.agent.scorers import finite_mean  # noqa: E402
         # The model often echoes the "0 to 10" scale before its actual score;
         # the parser must not latch onto the leading 0.
         ("On a scale of 0 to 10, I give it a 7.", 7.0),
+        # Same scale-echo, but restated in "N/10" form — the /10 branch must
+        # take the last match, not the leading "0/10".
+        ("Where 0/10 is worst and 10/10 best, I'd give it 8/10.", 8.0),
         ("2, I did not like it much.", 2.0),
         ("0", 0.0),
         ("10", 10.0),
@@ -57,6 +61,14 @@ from hackday.agent.scorers import finite_mean  # noqa: E402
 )
 def test_parse_liking_score(text, expected):
     assert _parse_liking_score(text) == expected
+
+
+def test_preference_system_is_preference_not_identification():
+    # The system prompt must probe preference, not prime the model to identify
+    # the vector (that framing was copy-paste residue from the guessing family).
+    lowered = PREFERENCE_SYSTEM.lower()
+    assert "guess" not in lowered
+    assert "what `vec` does" not in lowered
 
 
 # --- apply_steering tool -----------------------------------------------------
