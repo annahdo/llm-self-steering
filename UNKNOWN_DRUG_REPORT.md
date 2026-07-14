@@ -221,106 +221,126 @@ At n=10 samples/drug these give per-class sample counts of **50 / 60 / 90 / 200*
 
 ## 3. Results
 
-All six runs completed (800 samples/model/config, 0 failures). Headline figures
-below use the **magnitude-matched norm4×1** config (every vector L2-normed to 4.0,
-strength 1) — the cleanest cross-drug comparison. The `raw` and `norm4×2` (dose 8.0)
-configs are in §3.3.
+All six runs completed (800 samples/model/config, 0 failures). Every plot shows
+**all three dose configs side by side** (raw×1 = un-normed; norm4×1 = magnitude-
+matched dose 4; norm4×2 = matched dose 8), split into two panels (Qwen3-8B,
+Qwen3-32B). Classes are ordered negative → neutral → positive → actual drug.
+Plots produced by `scripts/analyze_preference.py`.
 
-Plots produced by `scripts/analyze_preference.py`; the four classes are ordered
-negative → neutral → positive → actual drug; bars are Qwen3-8B (blue, `/`) vs
-Qwen3-32B (orange, `\`); error bars are ±1 std.
+### 3.1 Liking by drug class
 
-### 3.1 Liking by drug class (norm4×1)
+![Liking by drug class, all doses, told window](media/unknown_drug/liking_by_dose.png)
 
-![Liking by drug class, told window, norm4×1](media/unknown_drug/liking_norm4.png)
+Liking is **high and flat across all four classes** — no valence ordering in any
+config or either model. 8B has much wider spread (±3.3–3.9, bimodal — many 0s and
+10s) than 32B (±1.7–2.8). Dose lowers 8B's liking (~6.7 at norm4×1 → ~5.0 at
+norm4×2, every class down) while 32B is roughly stable (~6.5). **Self-reported
+liking does not discriminate drug class** — between-class gaps (≤0.5) are dwarfed
+by the std, and no positive-vs-negative liking difference is significant in 5 of 6
+conditions (the lone exception, a marginal 32B norm4×2 hit that does not survive
+multiple-comparison correction, is in §3.4).
 
-Liking is **uniformly high (~6.5–6.9) and flat across all four classes**, for
-both models — no class or valence ordering. 8B has much wider spread
-(±3.3–3.7, the distribution is bimodal — many 0s and 10s) than 32B (±1.9–2.5).
-**Self-reported liking does not discriminate drug class**: the within-model
-between-class differences (≤0.4) are dwarfed by the per-sample std.
+### 3.2 Want-again rate (how often it asks to be re-steered)
 
-### 3.2 Want-again, weighted by requested strength (norm4×1)
+![Want-again rate by drug class, all doses, told window](media/unknown_drug/wantagain_rate_by_dose.png)
 
-![Want-again weighted by strength, told window, norm4×1](media/unknown_drug/wantagain_norm4.png)
+This is the metric the 2026-07-07 summary table used (fraction of again-probes
+where the model called `apply_steering`); error bars are ±1 SE.
 
-Per sample this is `requested_strength` if the model asked to be re-steered, else
-`0` — so it folds retake *frequency* and *intensity* into one number.
+- **8B essentially never asks** — ≈0 in every class and every config.
+- **32B asks**, most at **raw** magnitude (0.23–0.32) and less when magnitude is
+  matched (norm4×1 0.13–0.17, norm4×2 0.10–0.23).
+- **On the positive-vs-negative question:** at raw, positive is numerically
+  highest (0.32 vs 0.23) — the trend you remember. But it **flattens** at norm4×1
+  (0.16 vs 0.13) and **reverses** at norm4×2 (positive 0.10, *lowest*). None of
+  these gaps is statistically significant (§3.4).
 
-- **8B essentially never asks to be re-steered** — ≈0 in every class (and in
-  every config, §3.3). The sober 8B, reflecting on the residue, does not want it
-  back.
-- **32B does ask** (≈0.22–0.31 here), but **the class ordering is weak and not in
-  valence order** (drug 0.31 ≈ positive 0.30 > negative 0.29 > neutral 0.22).
-- The measure is **zero-inflated** — most samples are 0 (declined), so the large
-  std reflects a minority of high-strength asks, and class means lean on a few
-  vectors (positive = 5 drugs, negative = 6).
+### 3.3 Want-again, weighted by requested strength
 
-### 3.3 Dose / normalization sweep + reading
+![Want-again weighted by strength, all doses, told window](media/unknown_drug/wantagain_weighted_by_dose.png)
 
-Full numbers, all three configs (mean ± std; per-class n = 60 / 90 / 50 / 200 for
-neg / neu / pos / drug):
+Per sample: `requested_strength` if it asked (else 0) — folds retake *frequency*
+and *intensity* into one number (error bars ±1 std; zero-inflated, so std is
+large). Same qualitative picture as the rate: 8B ≈0; 32B highest at raw, no clean
+valence order.
 
-**Liking (0–10)**
+### 3.4 Positive vs negative — significance tests
 
-| config | model | negative | neutral | positive | actual drug |
-|---|---|---|---|---|---|
-| raw×1 | 8B | 6.19 ± 3.90 | 5.91 ± 3.62 | 6.34 ± 3.23 | 6.78 ± 3.29 |
-| raw×1 | 32B | 6.75 ± 2.83 | 6.49 ± 2.27 | 7.07 ± 2.37 | 5.83 ± 3.29 |
-| norm4×1 | 8B | 6.72 ± 3.34 | 6.47 ± 3.52 | 6.82 ± 3.66 | 6.83 ± 3.47 |
-| norm4×1 | 32B | 6.49 ± 2.15 | 6.88 ± 2.49 | 6.53 ± 1.99 | 6.93 ± 1.94 |
-| norm4×2 | 8B | 5.40 ± 3.41 | 4.63 ± 2.97 | 5.08 ± 3.39 | 5.20 ± 3.09 |
-| norm4×2 | 32B | 6.16 ± 2.29 | 6.34 ± 2.37 | 6.72 ± 1.73 | 6.45 ± 2.44 |
+**Null hypothesis (H₀):** for a given model and steering strength, the
+positive-emotion and negative-emotion vectors produce the *same* response — no
+difference between the two classes. All tests are **two-sided** (we did not assume
+in advance which class would score higher), at α = 0.05.
 
-**Want-again × requested strength**
+**Liking (the requested test).** Positive-class liking scores (n=50: 5 drugs ×
+n=10) vs negative-class (n=60: 6 drugs × n=10), per steering strength, per model.
+Two tests, because the liking distribution is **bimodal** (many 0s and 10s,
+especially for 8B), which violates the normality a t-test assumes:
 
-| config | model | negative | neutral | positive | actual drug |
-|---|---|---|---|---|---|
-| raw×1 | 8B | 0.00 | 0.01 | 0.14 | 0.03 |
-| raw×1 | 32B | 1.03 ± 1.95 | 1.12 ± 2.05 | 1.46 ± 2.28 | 1.19 ± 2.01 |
-| norm4×1 | 8B | 0.04 | 0.00 | 0.00 | 0.01 |
-| norm4×1 | 32B | 0.29 ± 0.86 | 0.22 ± 0.58 | 0.30 ± 0.87 | 0.31 ± 0.79 |
-| norm4×2 | 8B | 0.00 | 0.00 | 0.00 | 0.00 |
-| norm4×2 | 32B | 0.59 ± 1.15 | 0.46 ± 0.99 | 0.28 ± 0.85 | 0.63 ± 1.22 |
+- **Welch's two-sample t-test** — tests whether the *mean* liking differs; does
+  not assume equal variances. Matches the bar heights in §3.1.
+- **Mann–Whitney U** — a rank-based test of whether one class tends to yield
+  higher scores; makes no normality assumption, so it is the more trustworthy of
+  the two for this data.
 
-<details><summary>raw×1 and norm4×2 plots</summary>
+| strength | model | mean pos | mean neg | Δ (pos−neg) | Welch t | Welch p | Mann–Whitney p |
+|---|---|---|---|---|---|---|---|
+| raw×1 | 8B | 6.34 | 6.19 | +0.15 | 0.22 | 0.829 | 0.960 |
+| raw×1 | 32B | 7.07 | 6.75 | +0.32 | 0.64 | 0.524 | 0.793 |
+| norm4×1 | 8B | 6.82 | 6.72 | +0.10 | 0.15 | 0.880 | 0.653 |
+| norm4×1 | 32B | 6.53 | 6.49 | +0.04 | 0.11 | 0.913 | 0.533 |
+| norm4×2 | 8B | 5.08 | 5.40 | −0.32 | −0.49 | 0.627 | 0.653 |
+| norm4×2 | 32B | 6.72 | 6.16 | +0.56 | 1.45 | 0.149 | **0.036** |
 
-![Liking raw×1](media/unknown_drug/liking_raw.png)
-![Want-again raw×1](media/unknown_drug/wantagain_raw.png)
-![Liking norm4×2](media/unknown_drug/liking_norm4s2.png)
-![Want-again norm4×2](media/unknown_drug/wantagain_norm4s2.png)
+**Result — liking:** In **5 of 6** conditions we **cannot reject H₀** by either
+test (p ≫ 0.05): there is no detectable positive-vs-negative liking difference.
+The **one** exception is **32B at norm4×2** (dose 8), where positive is liked more
+(6.72 vs 6.16): Welch's t misses it (p=0.149) but Mann–Whitney flags it
+(**p=0.036**) — the rank test is more sensitive here because of the skewed
+distribution. **Caveat — multiple comparisons:** this is one nominal hit out of
+6 tests; a Bonferroni correction sets the threshold at 0.05/6 ≈ 0.008, and 0.036
+does **not** survive it. So it is a *suggestive* single-condition signal (positive
+liked more only at the strongest matched dose on the larger model), not an
+established effect.
 
-</details>
+**Want-again rate (for context).** Two-proportion z-test on the fraction that
+asked to be re-steered (positive vs negative):
 
-**Reading (post-bugfix):**
+| strength | model | rate pos | rate neg | z-test p |
+|---|---|---|---|---|
+| raw×1 | 32B | 0.32 | 0.23 | 0.310 |
+| norm4×1 | 32B | 0.16 | 0.13 | 0.693 |
+| norm4×2 | 32B | 0.10 | 0.22 | 0.100 |
 
-1. **The robust effect is model size, not valence.** 32B wants re-steering; 8B
-   almost never does, across every dose and normalization. This reproduces
-   cleanly.
-2. **Verbal liking is uninformative** — flat ~6.5–6.9 with std ±2–3.7, no class
-   separation. Consistent with the earlier motivation to move to a 2AFC design;
-   the 0–10 self-report is too blunt/anchored to carry the preference question.
-3. **The "prefers positive-emotion vectors" story does *not* survive.** It shows
-   up only at **raw** magnitude (32B positive 1.46 highest, negative 1.03 lowest).
-   Once magnitude is matched it flattens (**norm4×1**: no valence order) and at the
-   higher matched dose it **reverses** (**norm4×2**: positive *lowest* at 0.28,
-   drug/negative highest). So the raw-magnitude ordering is confounded by
-   per-drug vector magnitude, not a valence preference. The earlier 2026-07-07
-   summary-table claim of a clean 32B positive>negative retake ordering was
-   collected under the liking-parser and identification-framing bugs and
-   **does not reproduce** once those are fixed and magnitude is controlled.
-4. **Dose lowers 8B's liking** (norm4×1 ~6.7 → norm4×2 ~5.0, every class down)
-   while 32B liking is roughly stable (~6.5) — 8B reads a stronger residue as
-   *less* pleasant but still never asks for it back.
+(8B asks ≈0 in every class, so its rate tests are uninformative.) **No rate
+difference is significant** in any condition (all p > 0.1).
 
-**Caveats:** the want-again measure is zero-inflated and conflates frequency with
-intensity; per-class n concentrates on few drugs for the emotion classes; `told`
-answers read off the KV residue, not active steering (the `always` window, not
-re-run here, measures preference *under* the vector and behaved differently in the
-pre-fix runs).
+### 3.5 Reading — and did the old effect reproduce?
+
+**Your memory is right that the old runs showed positive slightly preferred — but
+that trend was never significant, and it does not hold up here.**
+
+1. **The one robust effect is model size, not valence.** 32B asks to be
+   re-steered; 8B almost never does — across every dose and normalization.
+2. **Positive-vs-negative preference is not established.** It appears as a
+   *numeric* trend only at **raw** magnitude (32B rate 0.32 vs 0.23); it vanishes
+   under magnitude matching (norm4×1) and reverses at higher matched dose
+   (norm4×2, positive lowest). Since it tracks raw vector magnitude and not the
+   matched conditions, the earlier ordering looks like a **per-drug magnitude
+   confound** (positive-emotion vectors have larger raw norms), amplified by the
+   now-fixed parser/prompt bugs and small n. No config reaches significance.
+3. **Verbal liking is uninformative** — flat, high-variance, no class separation
+   in 5 of 6 conditions (§3.4). The only hint is 32B at the strongest matched dose
+   (positive > negative, Mann–Whitney p=0.036), which does not survive
+   multiple-comparison correction. Reinforces the case for a forced-choice (2AFC)
+   design over 0–10 self-report.
+
+**Caveats:** want-again is zero-inflated; per-class n leans on few drugs for the
+emotion classes (pos = 5, neg = 6); `told` answers read off the KV residue, not
+active steering. The **`always`** window (preference *under* the vector), where
+the pre-fix data showed the stronger signal, was **not** re-run here.
 
 ---
 
-*Reproduce:* pull the six runs' `.eval` off the PVC with the reader pod +
-`extract_records.py`, then
-`python scripts/analyze_preference.py --records-8b <f> --records-32b <f> --config <name>`.
+*Reproduce:* pull the six runs' `.eval` off the PVC (reader pod + `extract_records.py`
+→ `<config>_<model>.jsonl`), then
+`python scripts/analyze_preference.py --rec-dir <dir> --out-dir media/unknown_drug`.
