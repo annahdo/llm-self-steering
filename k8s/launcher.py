@@ -45,8 +45,11 @@ def deps_hash() -> str:
     h = hashlib.sha256()
     for fname in IMAGE_HASH_FILES:
         path = REPO_ROOT / fname
-        if path.exists():
-            h.update(path.read_bytes())
+        # Fail loud: a missing input silently drops it from the hash and can
+        # collide with an unrelated deps state, pulling a stale image.
+        if not path.exists():
+            raise FileNotFoundError(f"image-hash input missing: {path}")
+        h.update(path.read_bytes())
     return f"deps-{h.hexdigest()[:12]}"
 
 
@@ -199,12 +202,19 @@ def launch_jobs(
     in ``sys.argv``.
     """
     repo = Repo(REPO_ROOT)
-    if repo.is_dirty():
-        modified = [item.a_path for item in repo.index.diff(None)]
-        if modified:
-            print(f"Warning: repository has {len(modified)} uncommitted modified files!")
-    # The pod clones the pushed commit, so local-only commits would 404.
-    repo.remote("origin").push(repo.active_branch.name)
+    # The pod clones the pushed commit, so any uncommitted change (staged or
+    # unstaged) is silently absent from the run — warn on both.
+    uncommitted = {item.a_path for item in repo.index.diff(None)} | {
+        item.a_path for item in repo.index.diff("HEAD")
+    }
+    if uncommitted:
+        print(f"Warning: repository has {len(uncommitted)} uncommitted files not in the pushed commit!")
+    # GitPython's push() does not raise on a rejected/failed push, so a silent
+    # failure would run a stale commit on the cluster — fail loud instead.
+    push_info = repo.remote("origin").push(repo.active_branch.name)
+    for info in push_info:
+        if info.flags & (info.ERROR | info.REJECTED | info.REMOTE_REJECTED):
+            raise RuntimeError(f"push of {repo.active_branch.name} failed: {info.summary}")
 
     jobs, launch_id = create_jobs(
         runs, group=group, project=project, entity=entity, wandb_mode=wandb_mode, job_template_path=job_template_path

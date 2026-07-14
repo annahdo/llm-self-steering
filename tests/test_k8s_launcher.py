@@ -15,6 +15,7 @@ pytest.importorskip("git")
 pytest.importorskip("names_generator")
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "k8s"))
+import launcher  # noqa: E402
 from launcher import FlamingoRun, create_jobs, deps_hash  # noqa: E402
 
 
@@ -33,6 +34,13 @@ def make_run(**overrides) -> FlamingoRun:
 def test_deps_hash_format_and_stability():
     assert re.fullmatch(r"deps-[0-9a-f]{12}", deps_hash())
     assert deps_hash() == deps_hash()
+
+
+def test_deps_hash_fails_loud_on_missing_input(monkeypatch):
+    # A missing hash input must raise, not silently drop from the hash.
+    monkeypatch.setattr(launcher, "IMAGE_HASH_FILES", ["does_not_exist.lock"])
+    with pytest.raises(FileNotFoundError):
+        deps_hash()
 
 
 def test_create_jobs_fills_every_placeholder():
