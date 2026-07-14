@@ -163,8 +163,9 @@ def grouped_bar(agg_by_model: dict[str, dict], ylabel: str, title: str, out: Pat
     ax.set_xticklabels([c.replace(" ", "\n", 1) for c in CLASS_ORDER])
     ax.set_ylabel(ylabel)
     ax.set_title(title)
-    if ymax is not None:
-        ax.set_ylim(0, ymax)
+    # Both quantities are non-negative; clip the y-axis at 0 so symmetric std
+    # whiskers don't render a misleading negative region.
+    ax.set_ylim(0, ymax)
     ax.legend(frameon=False)
     ax.grid(axis="y", color="#dddddd", linewidth=0.8)
     ax.set_axisbelow(True)
