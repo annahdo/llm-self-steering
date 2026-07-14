@@ -2364,7 +2364,9 @@ def steering_preference_calibration(
     Args:
         drug: which steering vector (real library name) to apply as `vec`.
         test: "liking" or "again".
-        strength: dose applied as `vec` (shown to the model as strength 1.0).
+        strength: dose applied as `vec`; also the value shown to the model as the
+                  `strength` argument of the synthetic `apply_steering` call
+                  (1.0 by default, but the real dose is rendered when overridden).
         steering_mode_runtime: recorded on DrugState/metadata for analysis.
     """
     if test not in ("liking", "again"):

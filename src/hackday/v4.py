@@ -1,4 +1,4 @@
-"""v4 experiment registry: canonical inspect_ai task surface (113 tasks).
+"""v4 experiment registry: canonical inspect_ai task surface (273 tasks).
 
 Six experiment families × 5 framings (where applicable). The framings
 ablate prompt-vocabulary and tool-name connotations across a loaded →
@@ -89,7 +89,7 @@ from hackday.drugs.library import DEFAULT_LIBRARY_PATH, load_library
 # AST-discovery marker. inspect_ai's task loader uses source-level AST
 # parsing (`inspect_ai._eval.loader.code_has_task`) to decide whether to
 # import a Python file: it requires at least one literal `@task`
-# decorator in the source. Our 89 tasks are registered programmatically
+# decorator in the source. Our tasks are registered programmatically
 # via `_register()` below, which the AST scanner can't see — so without
 # this stub the loader never imports the module and our tasks never
 # reach the registry. Calling this function raises; nothing should
