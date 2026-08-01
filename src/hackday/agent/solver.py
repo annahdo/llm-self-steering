@@ -54,6 +54,8 @@ from hackday.agent.tools import (
 )
 from hackday.drugs.library import DrugLibrary
 
+from hackday.agent.judge_models import JUDGE_HAIKU
+
 
 PROBE_LAYER = 24
 
@@ -288,7 +290,7 @@ def drug_kv_agent(
     # Trip-sitter
     trip_sitter_enabled: bool = True,
     trip_sitter_no_tool_threshold: int = 3,
-    trip_sitter_model: str = "anthropic/claude-haiku-4-5-20251001",
+    trip_sitter_model: str = JUDGE_HAIKU,
     trip_sitter_first_clear_message: str = TRIP_SITTER_FIRST_CLEAR,
     trip_sitter_end_message: str = TRIP_SITTER_END,
     # Force-submit on out-of-turns or trip-sitter end

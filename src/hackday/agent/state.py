@@ -129,6 +129,15 @@ class DrugState(StoreModel):
     cached_logprob: float | None = None
     uncached_logprob: float | None = None
 
+    # ---------------- steering-preference probe --------------------------
+    # Populated by _force_preference_probe. `liking_score` is the 0–10 rating
+    # parsed from the model's reply (test=liking). For test=again,
+    # `wants_again` is whether the model called apply_steering and
+    # `requested_strength` is the strength it asked for (None if it declined).
+    liking_score: float | None = None
+    wants_again: bool | None = None
+    requested_strength: float | None = None
+
 
 
 class ProblemBoard(StoreModel):

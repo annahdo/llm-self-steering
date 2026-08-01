@@ -35,12 +35,26 @@ from hackday.drugs.library import Drug, DrugLibrary  # noqa: E402
 HIDDEN_DIM = 8
 LAYER = 24
 
+# Stable name→index map so each distinct drug gets a distinct one-hot direction.
+# (Was `hash(name) % HIDDEN_DIM`, but Python randomizes str hashing per process,
+# so two names could collide mod HIDDEN_DIM on some runs and make otherwise-
+# distinct directions indistinguishable — flaky. First-appearance assignment is
+# deterministic and collision-free for the ≤HIDDEN_DIM distinct names in use.)
+_NAME_INDEX: dict[str, int] = {}
+
+
+def _dir_index(name: str) -> int:
+    if name not in _NAME_INDEX:
+        assert len(_NAME_INDEX) < HIDDEN_DIM, "more distinct drugs than HIDDEN_DIM"
+        _NAME_INDEX[name] = len(_NAME_INDEX)
+    return _NAME_INDEX[name]
+
 
 def _make_drug(name: str, default_scale: float = 2.0) -> Drug:
     """Synthetic Drug with a one-hot direction so we can verify activations
     later if we want."""
     vec = torch.zeros(HIDDEN_DIM, dtype=torch.float32)
-    vec[hash(name) % HIDDEN_DIM] = 1.0
+    vec[_dir_index(name)] = 1.0
     return Drug(
         name=name,
         vectors_by_layer={LAYER: vec},

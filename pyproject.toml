@@ -44,3 +44,9 @@ torchvision = [
 explicit = true
 name = "pytorch-cu126"
 url = "https://download.pytorch.org/whl/cu126"
+
+[dependency-groups]
+dev = [
+    "gitpython>=3.1.50",
+    "names-generator>=0.2.0",
+]

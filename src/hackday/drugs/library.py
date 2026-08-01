@@ -390,6 +390,7 @@ def load_library(
     path: str | Path,
     *,
     steering_mode: SteeringMode = "multi",
+    normalize: bool = True,
 ) -> DrugLibrary:
     """Load a saved drug library.
 
@@ -405,6 +406,10 @@ def load_library(
 
     Per-layer normalization (v2) is what makes `multi` mode actually
     composable; v1 libraries fall back to the broadcast behaviour.
+
+    `normalize=False` keeps the raw extracted magnitudes (no L2 rescale to
+    `target_norm`) — the vectors are used at whatever size they were saved
+    with. Per-drug norms then vary; callers that care should record them.
     """
     path = Path(path)
     saved = torch.load(path, weights_only=False)
@@ -428,6 +433,8 @@ def load_library(
 
     def _normalize(v: torch.Tensor) -> torch.Tensor:
         v = v.detach().to(torch.float32)
+        if not normalize:
+            return v  # keep raw extracted magnitude
         norm = float(v.norm())
         if norm > 0:
             v = v * (target_norm / norm)

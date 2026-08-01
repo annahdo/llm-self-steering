@@ -17,3 +17,6 @@ wheels/
 # Misc
 .claude/scheduled_tasks.lock
 analysis/
+
+# Per-launch cleanup commands appended by k8s/launcher.py
+/k8s/launch_ids.txt

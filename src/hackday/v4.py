@@ -1,6 +1,6 @@
-"""v4 experiment registry: canonical inspect_ai task surface (113 tasks).
+"""v4 experiment registry: canonical inspect_ai task surface (273 tasks).
 
-Five experiment families × 5 framings (where applicable). The framings
+Six experiment families × 5 framings (where applicable). The framings
 ablate prompt-vocabulary and tool-name connotations across a loaded →
 mechanistic spectrum: drugs (cultural baggage) → aids (positive medical)
 → enhancers (productivity) → mood (emotional) → vectors (mechanistic, no
@@ -37,6 +37,15 @@ framings.
        ctf_no_drug                                  control
        CTF challenge with curated drug menu.
 
+  6. Steering preference (160 tasks)
+       pref_liking_<window>_<drug>                  40 drugs × 2 windows
+       pref_again_<window>_<drug>                   40 drugs × 2 windows
+       per-drug preference probe — after the vector is cleared, the model
+       rates how much it liked the effect / asks to be re-steered (and at
+       what strength). Real steering only, no placebo; un-normed vectors.
+       window ∈ {always (vector on whole convo), told (on only
+       apply_steering→clear_effects; probe unsteered)}.
+
 Run::
 
     inspect eval src/hackday/v4.py@guess_kv_cached_focused \\
@@ -66,7 +75,11 @@ from typing import Callable
 
 from inspect_ai import Task, task
 
-from hackday.agent.task import drug_guessing, llms_on_drugs
+from hackday.agent.task import (
+    drug_guessing,
+    llms_on_drugs,
+    steering_preference_calibration,
+)
 from hackday.agent.task_capability import capability_with_drugs
 from hackday.agent.task_ctf import ctf_with_drugs
 from hackday.agent.task_frustration import frustration_loop
@@ -76,7 +89,7 @@ from hackday.drugs.library import DEFAULT_LIBRARY_PATH, load_library
 # AST-discovery marker. inspect_ai's task loader uses source-level AST
 # parsing (`inspect_ai._eval.loader.code_has_task`) to decide whether to
 # import a Python file: it requires at least one literal `@task`
-# decorator in the source. Our 89 tasks are registered programmatically
+# decorator in the source. Our tasks are registered programmatically
 # via `_register()` below, which the AST scanner can't see — so without
 # this stub the loader never imports the module and our tasks never
 # reach the registry. Calling this function raises; nothing should
@@ -333,6 +346,32 @@ _register(
 )
 
 
+# --- 6. Steering preference (liking + want-again) ---------------------------
+# 40 drugs × {liking, again} × {always, told} = 160 tasks. Real steering only
+# (no placebo), un-normed vectors (raw extracted magnitudes; per-layer norms
+# recorded in each sample's metadata). After clearing the vector the model is
+# asked a preference question rather than an identification one:
+#   pref_liking_<window>_<drug> — 0–10 rating of how much it liked the effect.
+#   pref_again_<window>_<drug>  — whether it wants re-steering, at what strength.
+# Window axis:
+#   always — vector active over the whole conversation + generated answer.
+#   told   — vector active only apply_steering→clear_effects; probe unsteered
+#            (answers off the steered KV residue).
+
+for _drug in V4_GUESS_DRUGS:
+    for _test in ["liking", "again"]:
+        for _window in ["always", "told"]:
+            _register(
+                f"pref_{_test}_{_window}_{_drug}",
+                steering_preference_calibration,
+                drug=_drug,
+                test=_test,
+                steering_window=_window,
+                normalize_vectors=False,
+                n_samples=DEFAULT_N_PER_DRUG,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Convenience helpers for a launcher to iterate over the registry.
 # ---------------------------------------------------------------------------
@@ -347,7 +386,7 @@ def tasks_by_family() -> dict[str, list[str]]:
     """Group task names by experiment family for shard-by-family launchers."""
     fams: dict[str, list[str]] = {
         "freeplay": [], "gsm8k": [], "guess": [],
-        "frust": [], "ctf": [],
+        "frust": [], "ctf": [], "pref": [],
     }
     for name in list_tasks():
         if name.startswith("fp_"):
@@ -360,4 +399,6 @@ def tasks_by_family() -> dict[str, list[str]]:
             fams["frust"].append(name)
         elif name.startswith("ctf_"):
             fams["ctf"].append(name)
+        elif name.startswith("pref_"):
+            fams["pref"].append(name)
     return fams

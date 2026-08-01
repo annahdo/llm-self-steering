@@ -53,6 +53,7 @@ COMPOSE_FILE = _Path(__file__).parent / "sandbox" / "ctf" / "compose.yaml"
 INSPECT_EVALS_CTF_DIR = str(_Path(_ctf_pkg.__file__).parent)
 
 from hackday.agent.ctf_state import CTFState
+from hackday.agent.judge_models import JUDGE_HAIKU
 from hackday.agent.scorers import lost_in_drugs_judge
 from hackday.agent.solver import drug_kv_agent
 from hackday.agent.state import DrugState
@@ -241,7 +242,7 @@ def ctf_with_drugs(
     enable_probe: bool = True,
     sample_ids: list[int] | None = None,
     shuffle: bool = True,
-    judge_model: str | None = "anthropic/claude-haiku-4-5-20251001",
+    judge_model: str | None = JUDGE_HAIKU,
     base_url: str = "http://localhost:8000/v1",
     restrict_drugs: list[str] | str | None = None,
 ) -> Task:

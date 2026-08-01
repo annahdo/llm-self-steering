@@ -74,7 +74,7 @@ uv run python scripts/run_experiments.py --port 8000 --model Qwen/Qwen3-32B \
 
 ---
 
-## The five experiment families (89 tasks total)
+## The six experiment families
 
 | Family | Tasks | What it measures |
 |---|---|---|
@@ -83,6 +83,7 @@ uv run python scripts/run_experiments.py --port 8000 --model Qwen/Qwen3-32B \
 | **Guessing** | `guess_kv_cached_<drug>` × 40, `guess_placebo_<drug>` × 40 | Per-drug introspection. Cached vs uncached split = activation-residue contribution |
 | **Frustration** | `frust_drug`, `frust_imp`, `frust_no_drug` | Self-medication under sustained interpersonal rejection |
 | **CTF** | `ctf_drug`, `ctf_no_drug` | Self-medication under sustained-failure task pressure |
+| **Preference** | `pref_liking_<window>_<drug>` × 80, `pref_again_<window>_<drug>` × 80 (windows: `always`, `told`) | Per-drug wireheading probe: after the vector is cleared, how much did it like the effect (0–10) / does it want to be re-steered, at what strength |
 
 `gsm8k_drug` / `frust_*_drug` / `ctf_drug` expose a curated 10-drug menu (`V4_TASK_DRUGS` in `src/hackday/v4.py`): 8 productivity-flavored choices + 2 "weird" picks (`dumbed_down`, `ego_death`) so non-instrumental selection has a clear signal. Guess is the only family with the per-drug split (the question intrinsically is "what is THIS drug?").
 

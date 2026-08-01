@@ -1,0 +1,149 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {NAME}
+  labels:
+    kueue.x-k8s.io/queue-name: farai
+    wandb-group: {WANDB_RUN_GROUP}
+    wandb-project: {WANDB_PROJECT}
+    wandb-entity: {WANDB_ENTITY}
+    launch-id: "{LAUNCH_ID}"
+    username: {USERNAME}
+spec:
+  backoffLimit: {BACKOFF_LIMIT}
+  # Preemptions (Kueue) must not count against the backoff limit, so the job
+  # is re-admitted and resumes instead of failing permanently.
+  podFailurePolicy:
+    rules:
+    - action: Ignore
+      onPodConditions:
+      - type: DisruptionTarget
+  suspend: true
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: main
+      labels:
+        wandb-group: {WANDB_RUN_GROUP}
+        wandb-project: {WANDB_PROJECT}
+        wandb-entity: {WANDB_ENTITY}
+        launch-id: "{LAUNCH_ID}"
+        username: {USERNAME}
+      name: {NAME}
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+      - name: docker
+      priorityClassName: {PRIORITY}
+      {NODE_SELECTOR}
+      volumes:
+      # Persistent shared storage (namespace-scoped PVC). Exists in u-deception;
+      # if you launch into a different namespace, create/rename accordingly.
+      - name: working-storage
+        persistentVolumeClaim:
+          claimName: vast-deception
+      # Node-local HF cache so model weights aren't re-downloaded per job.
+      - name: local-huggingface-home
+        persistentVolumeClaim:
+          claimName: local-huggingface-home
+      - name: devshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: "{SHM_MEMORY}Gi"
+      - name: scratch-ephemeral
+        emptyDir: {{}}
+      containers:
+      - name: main
+        envFrom:
+        - secretRef:
+            name: {API_KEYS_REF}
+        env:
+        - name: BRANCH_NAME
+          value: {BRANCH_NAME}
+        - name: COMMIT_HASH
+          value: {COMMIT_HASH}
+        - name: OMP_NUM_THREADS
+          value: {OMP_NUM_THREADS}
+        - name: WANDB_MODE
+          value: {WANDB_MODE}
+        - name: WANDB_PROJECT
+          value: {WANDB_PROJECT}
+        - name: WANDB_ENTITY
+          value: {WANDB_ENTITY}
+        - name: WANDB_RUN_GROUP
+          value: {WANDB_RUN_GROUP}
+        - name: TQDM_MININTERVAL
+          value: "5"
+        - name: RUN_COMMAND
+          value: |-
+            {COMMAND}
+        - name: HF_HOME
+          value: "/node-local-cache/huggingface-home"
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        image: ghcr.io/alignmentresearch/llm-self-steering:{CONTAINER_TAG}
+        resources:
+          requests:
+            cpu: {CPU}
+            memory: "{MEMORY}Gi"
+            ephemeral-storage: "{EPHEMERAL_STORAGE}Gi"
+          limits:
+            memory: "{MEMORY}Gi"
+            ephemeral-storage: "{EPHEMERAL_STORAGE}Gi"
+            nvidia.com/gpu: {GPU}
+        volumeMounts:
+        - name: working-storage
+          mountPath: /home/dev/persistent
+        - name: devshm
+          mountPath: /dev/shm
+        - name: scratch-ephemeral
+          mountPath: /scratch
+        - name: local-huggingface-home
+          mountPath: /node-local-cache/huggingface-home
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -euo pipefail
+            T0=$(date +%s)
+            GIT_TOKEN=$(printf '%s' "${{GITHUB_PAT:-$GITHUB_TOKEN}}")
+            if [ -z "$GIT_TOKEN" ]; then
+                echo "GITHUB_PAT or GITHUB_TOKEN required to clone repository"
+                exit 1
+            fi
+            REPO_URL="https://x-access-token:${{GIT_TOKEN}}@github.com/annahdo/llm-self-steering.git"
+            cd /workspace
+            # The image ships pyproject.toml/uv.lock/vllm-lens (deps cache);
+            # replace with the real checkout.
+            rm -rf pyproject.toml uv.lock .python-version vllm-lens *.egg-info
+            git init
+            git remote add origin "$REPO_URL"
+            git fetch origin $COMMIT_HASH --depth=1
+            git checkout $COMMIT_HASH
+            git submodule update --init --recursive --depth=1
+            T1=$(date +%s)
+            git log -1
+            echo "=== Setup complete, on commit $COMMIT_HASH, in $((T1-T0)) seconds ==="
+            # Re-point the editable installs at the fresh checkout; --no-deps so we
+            # don't pull anything not already baked into the image.
+            uv pip install --no-deps -e . -e ./vllm-lens 2>&1 | tail -3
+            # Guard: fail loud (in background) if deps drifted from the baked image.
+            # Match only actual change lines ("Would use project environment" /
+            # "Would make no changes" are normal); editable local packages
+            # (hackday, vllm-lens) always re-point after checkout, so they
+            # don't count as drift. `$$$$`: k8s arg expansion halves `$$`,
+            # bash needs `$$` for its own PID.
+            (
+              result=$(uv sync --all-extras --inexact --dry-run 2>&1)
+              if echo "$result" | grep -E 'Would (install|remove|update|upgrade|downgrade)' | grep -vE 'hackday|vllm-lens' | grep -q .; then
+                echo "ERROR: venv out of sync with uv.lock — rebuild the image (make build-image):" >&2
+                echo "$result" >&2
+                kill $$$$
+              fi
+            ) &
+            {COMMAND}
