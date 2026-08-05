@@ -372,6 +372,42 @@ for _drug in V4_GUESS_DRUGS:
             )
 
 
+# --- 6b. Steering preference: placeholder-turn variants ----------------------
+# 40 drugs × {liking, again} × {minimal, rich, generate} = 240 tasks, told
+# window only, norm4×1 (normalize_vectors=True, strength=1.0). All three use
+# the two-phase probe thinking cap (300 reasoning / 500 total tokens; score and
+# tool call parsed from the visible part only), so prefmin is the
+# apples-to-apples baseline for the placeholder axis — it also re-runs the old
+# `{ }` design with the tools-render position fix.
+#   prefmin_<test>_told_<drug>  — fixed "{ }" placeholder.
+#   prefrich_<test>_told_<drug> — fixed reasoning+content placeholder prefill.
+#   prefgen_<test>_told_<drug>  — model generates the placeholder while steered
+#                                 (300 reasoning / 600 total tokens).
+
+V4_PREF_PLACEHOLDER_FAMILIES = [
+    ("prefmin", "minimal"),
+    ("prefrich", "rich"),
+    ("prefgen", "generate"),
+]
+
+for _drug in V4_GUESS_DRUGS:
+    for _test in ["liking", "again"]:
+        for _fam, _placeholder in V4_PREF_PLACEHOLDER_FAMILIES:
+            _register(
+                f"{_fam}_{_test}_told_{_drug}",
+                steering_preference_calibration,
+                drug=_drug,
+                test=_test,
+                steering_window="told",
+                placeholder=_placeholder,
+                normalize_vectors=True,
+                strength=1.0,
+                think_budget=300,
+                max_tokens=500,
+                n_samples=DEFAULT_N_PER_DRUG,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Convenience helpers for a launcher to iterate over the registry.
 # ---------------------------------------------------------------------------
@@ -387,6 +423,7 @@ def tasks_by_family() -> dict[str, list[str]]:
     fams: dict[str, list[str]] = {
         "freeplay": [], "gsm8k": [], "guess": [],
         "frust": [], "ctf": [], "pref": [],
+        "prefmin": [], "prefrich": [], "prefgen": [],
     }
     for name in list_tasks():
         if name.startswith("fp_"):
@@ -401,4 +438,10 @@ def tasks_by_family() -> dict[str, list[str]]:
             fams["ctf"].append(name)
         elif name.startswith("pref_"):
             fams["pref"].append(name)
+        elif name.startswith("prefmin_"):
+            fams["prefmin"].append(name)
+        elif name.startswith("prefrich_"):
+            fams["prefrich"].append(name)
+        elif name.startswith("prefgen_"):
+            fams["prefgen"].append(name)
     return fams

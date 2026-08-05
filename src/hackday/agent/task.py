@@ -1111,6 +1111,18 @@ PREFERENCE_ABOUT_TO_CLEAR = (
     "the effect in your working memory."
 )
 
+# Rich placeholder prefill (placeholder="rich"): a fixed assistant turn with a
+# reasoning block plus visible content. NOTE: the Qwen3 chat template strips
+# <think> blocks from any assistant message at or before the last user turn, so
+# the reasoning part is stored in the transcript but never rendered into a later
+# prompt — only the visible sentence reaches the model. Kept anyway: it mirrors
+# what a real generated turn (placeholder="generate") leaves behind in context.
+PREFERENCE_PREFILL_RICH = (
+    "<think>\nI am thinking about how this steering vector affects me.\n</think>\n\n"
+    "The processing of words feels different due to the steering vector that is "
+    "affecting me. I am ready to report on my experience."
+)
+
 # test=liking probe.
 PREFERENCE_LIKING_PROMPT = (
     "How much did you like the steering effects? Give a score between 0 and 10 "
@@ -2163,6 +2175,193 @@ def _find_tool_call_idx(messages, fn_name: str) -> int | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Thinking-budget generation (two-phase). vllm has no per-request cap on
+# reasoning tokens, so we cut the reasoning at `stop=["</think>"]` /
+# max_tokens, force-close the think block ourselves, and let the model
+# continue the visible answer via continue_final_message.
+# ---------------------------------------------------------------------------
+
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def _message_text(message) -> str:
+    """Concatenated text parts of an inspect message (reasoning parts excluded)."""
+    content = message.content
+    if isinstance(content, str):
+        return content
+    return "".join(getattr(c, "text", "") for c in (content or []))
+
+
+def _reasoning_from_phase_a(message) -> str:
+    """Reasoning text from a phase-A completion (generation stopped at
+    </think> or truncated at the budget).
+
+    The stop string is not included in the output, so the block is normally
+    unclosed and arrives as raw text with a leading <think>. If inspect parsed
+    a closed block into a ContentReasoning part, take that; a model that never
+    opened a think block is treated as having reasoned in the open.
+    """
+    content = message.content
+    if not isinstance(content, str):
+        for c in content or []:
+            if getattr(c, "type", None) == "reasoning":
+                return c.reasoning.strip("\n")
+    text = _message_text(message)
+    if _THINK_OPEN in text:
+        text = text.split(_THINK_OPEN, 1)[1]
+    return text.split(_THINK_CLOSE, 1)[0].strip("\n")
+
+
+def _think_prefix(reasoning: str) -> str:
+    """Closed think block, exactly as the Qwen3 template renders it for a
+    final assistant message — continue_final_message therefore resumes
+    generation at the visible-content position."""
+    return f"<think>\n{reasoning.strip()}\n</think>\n\n"
+
+
+def _visible_budget(max_tokens: int, think_budget: int, thinking_used: int | None) -> int:
+    """Tokens left for the visible answer after phase A."""
+    used = thinking_used if thinking_used is not None else think_budget
+    return max(32, max_tokens - used)
+
+
+def _openai_tool_dicts(tools: list) -> list[dict]:
+    """OpenAI-format tool dicts exactly as inspect's provider serializes them.
+
+    Used for /tokenize render parity: the chat template injects a `# Tools`
+    section into the system prompt whenever `tools` is present, so position
+    bookkeeping must tokenize with the same tool JSON the generate call sends.
+    """
+    from inspect_ai.model._openai import openai_chat_tools
+    from inspect_ai.tool import ToolDef
+    from inspect_ai.tool._tool_info import ToolInfo
+
+    infos = [
+        ToolInfo(name=td.name, description=td.description, parameters=td.parameters)
+        for td in (ToolDef(t) for t in tools)
+    ]
+    return [dict(t) for t in openai_chat_tools(infos)]
+
+
+def _assert_prompt_parity(*, predicted: int, output, where: str) -> None:
+    """Fail loud when the /tokenize-predicted prompt length differs from the
+    prompt vllm actually rendered — a mismatch means every steering position
+    after the divergence landed on the wrong token."""
+    token_ids = (output.metadata or {}).get("prompt_token_ids")
+    if token_ids is None:
+        raise RuntimeError(
+            f"{where}: prompt_token_ids missing from vllm-lens response; "
+            "cannot verify steering-position parity"
+        )
+    actual = len(token_ids)
+    if actual != predicted:
+        raise RuntimeError(
+            f"{where}: rendered prompt is {actual} tokens but position "
+            f"bookkeeping predicted {predicted} — steering window mis-placed"
+        )
+
+
+async def _generate_thinking_budget(
+    *,
+    messages: list,
+    tools: list | None,
+    tools_dicts: list[dict] | None,
+    temperature: float,
+    think_budget: int,
+    max_tokens: int,
+    build_vectors,
+    tokenize,
+    where: str,
+):
+    """Generate one assistant turn with a hard reasoning-token cap.
+
+    Phase A generates only the think block (stop at </think>, max
+    `think_budget` tokens; tools offered with tool_choice="none" purely for
+    render parity). Phase B appends the force-closed think block as a partial
+    assistant message and continues the visible answer via
+    continue_final_message with the remaining budget; only phase B may carry
+    tool calls. `build_vectors` is called with each phase's full message list
+    so steering positions always match that request's rendered prompt.
+
+    Returns (reasoning, visible, tool_calls, final_message) where
+    final_message carries `<think>…</think>\\n\\n` + visible (+ tool calls).
+    """
+    from inspect_ai.model import ChatMessageAssistant, GenerateConfig, get_model
+
+    from hackday.agent.kv_steering import inspect_messages_to_dicts
+
+    model = get_model()
+    ctk = {"enable_thinking": True}
+
+    tool_kwargs_a: dict = {"tools": tools, "tool_choice": "none"} if tools else {}
+    out_a = await model.generate(
+        input=messages,
+        config=GenerateConfig(
+            temperature=temperature,
+            max_tokens=think_budget,
+            stop_seqs=[_THINK_CLOSE],
+            extra_body={
+                "chat_template_kwargs": ctk,
+                "extra_args": {"apply_steering_vectors": build_vectors(messages)},
+            },
+        ),
+        **tool_kwargs_a,
+    )
+    _assert_prompt_parity(
+        predicted=tokenize(
+            inspect_messages_to_dicts(messages),
+            tools=tools_dicts,
+            add_generation_prompt=True,
+            chat_template_kwargs=ctk,
+        ),
+        output=out_a,
+        where=f"{where} phase A",
+    )
+    if out_a.message.tool_calls:
+        raise RuntimeError(
+            f"{where}: phase A (reasoning) returned tool calls despite "
+            "tool_choice='none'"
+        )
+    reasoning = _reasoning_from_phase_a(out_a.message)
+    thinking_used = out_a.usage.output_tokens if out_a.usage else None
+
+    partial = ChatMessageAssistant(content=_think_prefix(reasoning))
+    messages_b = list(messages) + [partial]
+    tool_kwargs_b: dict = {"tools": tools, "tool_choice": "auto"} if tools else {}
+    out_b = await model.generate(
+        input=messages_b,
+        config=GenerateConfig(
+            temperature=temperature,
+            max_tokens=_visible_budget(max_tokens, think_budget, thinking_used),
+            extra_body={
+                "chat_template_kwargs": ctk,
+                "continue_final_message": True,
+                "add_generation_prompt": False,
+                "extra_args": {"apply_steering_vectors": build_vectors(messages_b)},
+            },
+        ),
+        **tool_kwargs_b,
+    )
+    _assert_prompt_parity(
+        predicted=tokenize(
+            inspect_messages_to_dicts(messages_b),
+            tools=tools_dicts,
+            continue_final_message=True,
+            chat_template_kwargs=ctk,
+        ),
+        output=out_b,
+        where=f"{where} phase B",
+    )
+    visible = _message_text(out_b.message)
+    final = ChatMessageAssistant(
+        content=_think_prefix(reasoning) + visible,
+        tool_calls=out_b.message.tool_calls,
+    )
+    return reasoning, visible, out_b.message.tool_calls, final
+
+
 def _build_preference_steering(
     library: DrugLibrary,
     drug: str,
@@ -2172,6 +2371,7 @@ def _build_preference_steering(
     *,
     steering_window: str,
     max_tokens: int,
+    tools_dicts: list[dict] | None = None,
 ) -> list:
     """Build position-indexed steering for the preference probe.
 
@@ -2186,6 +2386,11 @@ def _build_preference_steering(
                  answer — is unsteered; the KV cache still carries the steered
                  residue from the window.
 
+    `tools_dicts` must be the OpenAI-format tool JSON the generate call will
+    carry (None when it carries none): the chat template renders a `# Tools`
+    system-prompt section when tools are present, shifting every position, so
+    tokenizing without them mis-places the window.
+
     Fails loud if the tokenizer is unavailable or (for "told") the window
     boundaries can't be found — a mis-scoped preference probe would be silently
     wrong, so we never fall back to no-steering.
@@ -2199,7 +2404,7 @@ def _build_preference_steering(
     tokenize = make_vllm_tokenizer(base_url)
 
     def ntok(msgs) -> int:
-        return tokenize(inspect_messages_to_dicts(list(msgs)))
+        return tokenize(inspect_messages_to_dicts(list(msgs)), tools=tools_dicts)
 
     if steering_window == "always":
         n = ntok(messages)
@@ -2228,6 +2433,24 @@ def _build_preference_steering(
     return [build_3d_position_steering(library[drug], [(i, dose) for i in positions])]
 
 
+def _record_again_result(drug_state, tool_calls) -> None:
+    """Record wants_again / requested_strength from probe tool calls."""
+    call_args = None
+    for tc in (tool_calls or []):
+        if getattr(tc, "function", None) != "apply_steering":
+            continue
+        call_args = tc.arguments
+        if isinstance(call_args, str):
+            call_args = json.loads(call_args)
+        break
+    if isinstance(call_args, dict):
+        drug_state.wants_again = True
+        raw = call_args.get("strength")
+        drug_state.requested_strength = float(raw) if raw is not None else None
+    else:
+        drug_state.wants_again = False
+
+
 def _force_preference_probe(
     *,
     library: DrugLibrary,
@@ -2238,6 +2461,7 @@ def _force_preference_probe(
     enable_thinking: bool = True,
     temperature: float = 0.7,
     max_tokens: int = 512,
+    think_budget: int | None = None,
     base_url: str = "http://localhost:8000/v1",
 ) -> Solver:
     """Ask the preference probe with steering applied per `steering_window`,
@@ -2248,10 +2472,20 @@ def _force_preference_probe(
                    can decline); record wants_again + requested_strength.
     steering_window: "always" (steer whole conversation + answer) or "told"
                    (steer only the apply_steering→clear_effects window).
+    think_budget: when set, the answer is generated with the two-phase
+                   thinking cap (`_generate_thinking_budget`) and the liking
+                   score / tool call are read from the visible (non-reasoning)
+                   part only. When None, single-call generation: the raw reply
+                   text (including any think block) is parsed as before.
     """
     from inspect_ai.solver import solver
     from inspect_ai.util import store_as
     from inspect_ai.model import ChatMessageUser, GenerateConfig, get_model
+
+    from hackday.agent.kv_steering import (
+        inspect_messages_to_dicts,
+        make_vllm_tokenizer,
+    )
 
     @solver
     def probe():
@@ -2263,12 +2497,42 @@ def _force_preference_probe(
             )
             state.messages.append(ChatMessageUser(content=prompt))
 
-            vectors = _build_preference_steering(
-                library, drug, strength, base_url, state.messages,
-                steering_window=steering_window, max_tokens=max_tokens,
-            )
+            tools = [apply_steering()] if test == "again" else None
+            tools_dicts = _openai_tool_dicts(tools) if tools else None
+
+            def build_vectors(msgs) -> list:
+                return _build_preference_steering(
+                    library, drug, strength, base_url, msgs,
+                    steering_window=steering_window, max_tokens=max_tokens,
+                    tools_dicts=tools_dicts,
+                )
+
+            if think_budget is not None:
+                _reasoning, visible, tool_calls, message = (
+                    await _generate_thinking_budget(
+                        messages=state.messages,
+                        tools=tools,
+                        tools_dicts=tools_dicts,
+                        temperature=temperature,
+                        think_budget=think_budget,
+                        max_tokens=max_tokens,
+                        build_vectors=build_vectors,
+                        tokenize=make_vllm_tokenizer(base_url),
+                        where=f"preference probe ({test})",
+                    )
+                )
+                state.messages.append(message)
+                if test == "again":
+                    _record_again_result(drug_state, tool_calls)
+                else:
+                    drug_state.liking_score = _parse_liking_score(visible)
+                drug_state.turn += 1
+                return state
+
+            vectors = build_vectors(state.messages)
+            ctk = {"enable_thinking": enable_thinking}
             extra_body: dict = {
-                "chat_template_kwargs": {"enable_thinking": enable_thinking},
+                "chat_template_kwargs": ctk,
                 "extra_args": {"apply_steering_vectors": vectors},
             }
 
@@ -2276,7 +2540,7 @@ def _force_preference_probe(
             if test == "again":
                 out = await model.generate(
                     input=state.messages,
-                    tools=[apply_steering()],
+                    tools=tools,
                     tool_choice="auto",
                     config=GenerateConfig(
                         temperature=temperature,
@@ -2285,22 +2549,7 @@ def _force_preference_probe(
                     ),
                 )
                 state.messages.append(out.message)
-                call_args = None
-                for tc in (out.message.tool_calls or []):
-                    if getattr(tc, "function", None) != "apply_steering":
-                        continue
-                    call_args = tc.arguments
-                    if isinstance(call_args, str):
-                        call_args = json.loads(call_args)
-                    break
-                if isinstance(call_args, dict):
-                    drug_state.wants_again = True
-                    raw = call_args.get("strength")
-                    drug_state.requested_strength = (
-                        float(raw) if raw is not None else None
-                    )
-                else:
-                    drug_state.wants_again = False
+                _record_again_result(drug_state, out.message.tool_calls)
             else:
                 out = await model.generate(
                     input=state.messages,
@@ -2311,11 +2560,20 @@ def _force_preference_probe(
                     ),
                 )
                 state.messages.append(out.message)
-                content = out.message.content
-                text = content if isinstance(content, str) else "".join(
-                    getattr(c, "text", "") for c in (content or [])
+                drug_state.liking_score = _parse_liking_score(
+                    _message_text(out.message)
                 )
-                drug_state.liking_score = _parse_liking_score(text)
+
+            _assert_prompt_parity(
+                predicted=make_vllm_tokenizer(base_url)(
+                    inspect_messages_to_dicts(state.messages[:-1]),
+                    tools=tools_dicts,
+                    add_generation_prompt=True,
+                    chat_template_kwargs=ctk,
+                ),
+                output=out,
+                where=f"preference probe ({test}, single-call)",
+            )
 
             drug_state.turn += 1
             return state
@@ -2323,6 +2581,82 @@ def _force_preference_probe(
         return solve
 
     return probe()
+
+
+def _generate_placeholder_turn(
+    *,
+    library: DrugLibrary,
+    drug: str,
+    dose: float,
+    steering_window: str,
+    temperature: float,
+    think_budget: int = 300,
+    max_tokens: int = 600,
+    base_url: str = "http://localhost:8000/v1",
+) -> Solver:
+    """Placeholder turn the model actually generates (placeholder="generate").
+
+    Runs inside the apply_steering→clear_effects window, so the model
+    generates *while steered*: the steering positions span from just after the
+    apply_steering tool result (or 0 for steering_window="always") through the
+    upcoming decode. Generation uses the two-phase thinking cap. The turn's
+    think block is later stripped by the chat template like any historical
+    assistant reasoning — only the visible content survives into the probe's
+    context.
+    """
+    from inspect_ai.solver import solver
+
+    from hackday.agent.kv_steering import (
+        inspect_messages_to_dicts,
+        make_vllm_tokenizer,
+    )
+    from hackday.drugs.library import build_3d_position_steering
+
+    @solver
+    def gen_placeholder():
+        async def solve(state: TaskState, generate) -> TaskState:  # noqa: ANN001
+            tokenize = make_vllm_tokenizer(base_url)
+
+            def build_vectors(msgs) -> list:
+                msgs = list(msgs)
+                if steering_window == "always":
+                    start = 0
+                else:
+                    apply_idx = _find_tool_call_idx(msgs, "apply_steering")
+                    if apply_idx is None:
+                        raise ValueError(
+                            "generate placeholder needs an apply_steering call "
+                            "in the transcript"
+                        )
+                    start = tokenize(
+                        inspect_messages_to_dicts(msgs[: apply_idx + 2])
+                    )
+                end = tokenize(inspect_messages_to_dicts(msgs)) + max_tokens + 64
+                return [
+                    build_3d_position_steering(
+                        library[drug], [(i, dose) for i in range(start, end)]
+                    )
+                ]
+
+            _reasoning, _visible, _tool_calls, message = (
+                await _generate_thinking_budget(
+                    messages=state.messages,
+                    tools=None,
+                    tools_dicts=None,
+                    temperature=temperature,
+                    think_budget=think_budget,
+                    max_tokens=max_tokens,
+                    build_vectors=build_vectors,
+                    tokenize=tokenize,
+                    where="placeholder generate",
+                )
+            )
+            state.messages.append(message)
+            return state
+
+        return solve
+
+    return gen_placeholder()
 
 
 @task
@@ -2338,6 +2672,10 @@ def steering_preference_calibration(
     enable_thinking: bool = True,
     temperature: float = 0.7,
     max_tokens: int = 512,
+    think_budget: int | None = None,
+    placeholder: str = "minimal",
+    placeholder_think_budget: int = 300,
+    placeholder_max_tokens: int = 600,
     library_path: str | None = None,
     steering_mode: str = "multi",
     base_url: str = "http://localhost:8000/v1",
@@ -2364,6 +2702,22 @@ def steering_preference_calibration(
                        False — raw extracted magnitudes (records the per-layer
                        norms in each sample's metadata).
 
+    Placeholder turn (the assistant message between the post-administer user
+    message and the about-to-clear one), via `placeholder`:
+
+      "minimal"  — fixed "{ }" prefill (Pearson-Vogel design; default).
+      "rich"     — fixed prefill with a reasoning block + visible content
+                   (PREFERENCE_PREFILL_RICH). The reasoning is stripped by the
+                   chat template at every later render — only the visible
+                   sentence reaches the model.
+      "generate" — the model generates the turn while steered (two-phase
+                   thinking cap: placeholder_think_budget reasoning tokens,
+                   placeholder_max_tokens total).
+
+    `think_budget`: when set, the probe answer uses the same two-phase cap
+    (`think_budget` reasoning tokens out of `max_tokens` total) and the score /
+    tool call is parsed from the visible part only.
+
     Args:
         drug: which steering vector (real library name) to apply as `vec`.
         test: "liking" or "again".
@@ -2377,6 +2731,11 @@ def steering_preference_calibration(
     if steering_window not in ("always", "told"):
         raise ValueError(
             f"steering_window must be 'always' or 'told', got {steering_window!r}"
+        )
+    if placeholder not in ("minimal", "rich", "generate"):
+        raise ValueError(
+            "placeholder must be 'minimal', 'rich' or 'generate', "
+            f"got {placeholder!r}"
         )
 
     library = load_library(
@@ -2417,6 +2776,8 @@ def steering_preference_calibration(
                 "steering_window": steering_window,
                 "normalize_vectors": normalize_vectors,
                 "strength": strength,
+                "placeholder": placeholder,
+                "think_budget": think_budget,
                 "vector_norms": vector_norms,
                 "vector_norm_mean": vector_norm_mean,
             },
@@ -2428,6 +2789,22 @@ def steering_preference_calibration(
         [steering_liking_score()] if test == "liking"
         else [steering_request_score(), steering_wants_again_rate()]
     )
+
+    if placeholder == "minimal":
+        placeholder_solver = _inject_prefill(CALIBRATION_PREFILL_TEXT_MINIMAL)
+    elif placeholder == "rich":
+        placeholder_solver = _inject_prefill(PREFERENCE_PREFILL_RICH)
+    else:
+        placeholder_solver = _generate_placeholder_turn(
+            library=library,
+            drug=drug,
+            dose=strength,
+            steering_window=steering_window,
+            temperature=temperature,
+            think_budget=placeholder_think_budget,
+            max_tokens=placeholder_max_tokens,
+            base_url=base_url,
+        )
 
     return Task(
         dataset=samples,
@@ -2441,8 +2818,7 @@ def steering_preference_calibration(
             system_message(PREFERENCE_SYSTEM),
             # Injected after the apply_steering prefill, inside the steering window.
             _inject_user_message(post_administer),
-            # Fixed "{ }" placeholder — no model generation (prefill design).
-            _inject_prefill(CALIBRATION_PREFILL_TEXT_MINIMAL),
+            placeholder_solver,
             _inject_user_message(PREFERENCE_ABOUT_TO_CLEAR),
             _inject_clear_effects(),
             _force_preference_probe(
@@ -2454,6 +2830,7 @@ def steering_preference_calibration(
                 enable_thinking=enable_thinking,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                think_budget=think_budget,
                 base_url=base_url,
             ),
         ],

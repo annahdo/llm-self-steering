@@ -70,20 +70,37 @@ Tokenizer = Callable[[Sequence[dict]], int]
 
 
 def make_vllm_tokenizer(base_url: str, *, timeout: float = 15.0) -> Tokenizer:
-    """A `Tokenizer` that hits vllm's `/tokenize` endpoint."""
+    """A `Tokenizer` that hits vllm's `/tokenize` endpoint.
+
+    The returned callable accepts optional render inputs (`tools`,
+    `add_generation_prompt`, `continue_final_message`, `chat_template_kwargs`)
+    mirroring vllm's TokenizeChatRequest. Position bookkeeping must reproduce
+    EXACTLY the prompt the corresponding chat-completions request renders —
+    in particular, passing `tools` grows the rendered system prompt, shifting
+    every subsequent token position.
+    """
     server_root = base_url.replace("/v1", "").rstrip("/")
     url = f"{server_root}/tokenize"
 
-    def tok(messages_dicts: Sequence[dict]) -> int:
-        r = requests.post(
-            url,
-            json={
-                "messages": list(messages_dicts),
-                "add_generation_prompt": False,
-                "add_special_tokens": False,
-            },
-            timeout=timeout,
-        )
+    def tok(
+        messages_dicts: Sequence[dict],
+        *,
+        tools: Sequence[dict] | None = None,
+        add_generation_prompt: bool = False,
+        continue_final_message: bool = False,
+        chat_template_kwargs: dict | None = None,
+    ) -> int:
+        payload: dict = {
+            "messages": list(messages_dicts),
+            "add_generation_prompt": add_generation_prompt,
+            "continue_final_message": continue_final_message,
+            "add_special_tokens": False,
+        }
+        if tools:
+            payload["tools"] = list(tools)
+        if chat_template_kwargs:
+            payload["chat_template_kwargs"] = chat_template_kwargs
+        r = requests.post(url, json=payload, timeout=timeout)
         r.raise_for_status()
         return int(r.json()["count"])
 

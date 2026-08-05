@@ -186,7 +186,8 @@ def main() -> int:
     p.add_argument("--model", default="Qwen/Qwen3-8B", help="HF model id (default Qwen/Qwen3-8B)")
     fam = p.add_mutually_exclusive_group()
     fam.add_argument("--tasks", nargs="+", help="explicit task names")
-    fam.add_argument("--family", choices=("freeplay", "gsm8k", "guess", "frust", "ctf", "pref"))
+    fam.add_argument("--family", choices=("freeplay", "gsm8k", "guess", "frust", "ctf",
+                                          "pref", "prefmin", "prefrich", "prefgen"))
     p.add_argument("--n-samples", type=int, default=None, help="override samples per task")
     p.add_argument("--strength", type=float, default=None,
                    help="override steering strength/dose (factories that accept it, "
