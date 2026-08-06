@@ -130,7 +130,19 @@ def aggregate(records: list[dict], key: str, err: str) -> dict[str, tuple[float,
 
 
 def combined_plot(agg, configs, ylabel, title, out: Path, ymax=None, err_note=""):
-    """agg[model][config] = {class: (mean, err, n)}. 2 subplots (one per model)."""
+    """agg[model][config] = {class: (mean, err, n)}. 2 subplots (one per model).
+
+    ymax=None: scale to the tallest bar+error across BOTH panels (sharey means
+    a fixed per-axes autoscale would clip whichever panel draws second)."""
+    if ymax is None:
+        tops = [
+            m + e
+            for model in MODELS
+            for cfg, _ in configs
+            for m, e, _n in agg[model][cfg].values()
+            if math.isfinite(m)
+        ]
+        ymax = 1.12 * max(tops) if tops else 1.0
     fig, axes = plt.subplots(1, 2, figsize=(13, 5.2), sharey=True)
     x = np.arange(len(CLASS_ORDER))
     width = 0.8 / len(configs)
@@ -230,7 +242,7 @@ def main() -> None:
                   out_dir / "wantagain_weighted_by_dose.png", err_note="error bars ±1 std")
     combined_plot(agg_for("want_rate", "se_prop"), configs, "Want-again rate",
                   "Want-again rate by drug class — told window",
-                  out_dir / "wantagain_rate_by_dose.png", ymax=0.55,
+                  out_dir / "wantagain_rate_by_dose.png",
                   err_note="error bars ±1 SE")
 
     pos_vs_neg_tests(recs, configs)
