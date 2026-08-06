@@ -246,6 +246,9 @@ def test_openai_tool_dicts_shape():
     fn = dicts[0]["function"]
     assert fn["name"] == "apply_steering"
     assert set(fn["parameters"]["properties"]) == {"name", "strength"}
+    # OpenAICompatibleAPI.tools_to_openai adds strict — the template renders
+    # the tool JSON verbatim, so the parity prediction must include it too.
+    assert fn["strict"] is True
 
 
 class _Out:

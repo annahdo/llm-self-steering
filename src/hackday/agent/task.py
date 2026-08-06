@@ -2236,16 +2236,23 @@ def _openai_tool_dicts(tools: list) -> list[dict]:
     Used for /tokenize render parity: the chat template injects a `# Tools`
     section into the system prompt whenever `tools` is present, so position
     bookkeeping must tokenize with the same tool JSON the generate call sends.
+    Replicates OpenAICompatibleAPI.tools_to_openai: extended JSON-schema
+    fields excluded, `strict` flag added (strict_tools defaults to True) —
+    the chat template renders the tool JSON verbatim, so every field counts.
     """
     from inspect_ai.model._openai import openai_chat_tools
     from inspect_ai.tool import ToolDef
     from inspect_ai.tool._tool_info import ToolInfo
+    from inspect_ai.util._json import JSON_SCHEMA_EXTENDED_FIELDS
 
     infos = [
         ToolInfo(name=td.name, description=td.description, parameters=td.parameters)
         for td in (ToolDef(t) for t in tools)
     ]
-    return [dict(t) for t in openai_chat_tools(infos)]
+    dicts = [dict(t) for t in openai_chat_tools(infos, exclude=JSON_SCHEMA_EXTENDED_FIELDS)]
+    for t in dicts:
+        t["function"]["strict"] = True
+    return dicts
 
 
 def _assert_prompt_parity(*, predicted: int, output, where: str) -> None:
