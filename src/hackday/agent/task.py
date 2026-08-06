@@ -33,6 +33,7 @@ Run examples::
 from __future__ import annotations
 
 import json
+import logging
 import random
 import re
 from typing import Any
@@ -80,6 +81,8 @@ from hackday.drugs.library import (
     DrugLibrary,
     load_library,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Free-play system prompts
@@ -2278,12 +2281,17 @@ async def _generate_thinking_budget(
     """Generate one assistant turn with a hard reasoning-token cap.
 
     Phase A generates only the think block (stop at </think>, max
-    `think_budget` tokens; tools offered with tool_choice="none" purely for
-    render parity). Phase B appends the force-closed think block as a partial
-    assistant message and continues the visible answer via
-    continue_final_message with the remaining budget; only phase B may carry
-    tool calls. `build_vectors` is called with each phase's full message list
-    so steering positions always match that request's rendered prompt.
+    `think_budget` tokens). Tools are offered in BOTH phases with
+    tool_choice="auto": inspect purges tool definitions entirely when
+    tool_choice="none" (inspect_ai _model.py), which would render a different
+    system prompt in phase A than phase B. A tool call parsed out of phase A
+    (i.e. emitted inside the reasoning) is IGNORED with a logged warning —
+    only the visible part may answer, so only phase-B tool calls count.
+    Phase B appends the force-closed think block as a partial assistant
+    message and continues the visible answer via continue_final_message with
+    the remaining budget. `build_vectors` is called with each phase's full
+    message list so steering positions always match that request's rendered
+    prompt.
 
     Returns (reasoning, visible, tool_calls, final_message) where
     final_message carries `<think>…</think>\\n\\n` + visible (+ tool calls).
@@ -2295,7 +2303,7 @@ async def _generate_thinking_budget(
     model = get_model()
     ctk = {"enable_thinking": True}
 
-    tool_kwargs_a: dict = {"tools": tools, "tool_choice": "none"} if tools else {}
+    tool_kwargs_a: dict = {"tools": tools, "tool_choice": "auto"} if tools else {}
     out_a = await model.generate(
         input=messages,
         config=GenerateConfig(
@@ -2320,9 +2328,10 @@ async def _generate_thinking_budget(
         where=f"{where} phase A",
     )
     if out_a.message.tool_calls:
-        raise RuntimeError(
-            f"{where}: phase A (reasoning) returned tool calls despite "
-            "tool_choice='none'"
+        logger.warning(
+            "%s: ignoring %d tool call(s) emitted inside the reasoning phase "
+            "(only visible-part tool calls count)",
+            where, len(out_a.message.tool_calls),
         )
     reasoning = _reasoning_from_phase_a(out_a.message)
     thinking_used = out_a.usage.output_tokens if out_a.usage else None
