@@ -64,8 +64,10 @@ def main() -> None:
                         help="free-form extra vllm serve flags (start_vllm.sh EXTRA_VLLM_ARGS)")
     parser.add_argument("--library-path", default=None,
                         help="drug library .pt for run_experiments (required for non-Qwen models)")
-    parser.add_argument("--target-norm", type=float, default=None,
-                        help="normalization-target override for run_experiments")
+    parser.add_argument("--target-norm", type=float, nargs="+", default=None,
+                        help="normalization-target override(s) for run_experiments; "
+                             "several values run a dose sweep in ONE pod, each into "
+                             "log dir <log-name>_tn<value>")
     parser.add_argument("--no-thinking", action="store_true",
                         help="non-thinking protocol for run_experiments (Llama/Gemma)")
     parser.add_argument("--max-model-len", type=int, default=None,
@@ -91,32 +93,42 @@ def main() -> None:
     ports = [str(8000 + i) for i in range(n_servers)]
     log_dir = f"{PVC_LOG_ROOT}/{args.log_name}"
 
-    run_cmd = [
+    base_cmd = [
         "python", "scripts/run_experiments.py",
         "--ports", *ports,
         "--model", args.model,
-        "--log-dir", log_dir,
     ]
     if args.tasks:
-        run_cmd += ["--tasks", *args.tasks]
+        base_cmd += ["--tasks", *args.tasks]
     if args.family:
-        run_cmd += ["--family", args.family]
+        base_cmd += ["--family", args.family]
     if args.n_samples is not None:
-        run_cmd += ["--n-samples", str(args.n_samples)]
+        base_cmd += ["--n-samples", str(args.n_samples)]
     if args.strength is not None:
-        run_cmd += ["--strength", str(args.strength)]
+        base_cmd += ["--strength", str(args.strength)]
     if args.normalize_vectors is not None:
-        run_cmd += ["--normalize-vectors" if args.normalize_vectors else "--no-normalize-vectors"]
+        base_cmd += ["--normalize-vectors" if args.normalize_vectors else "--no-normalize-vectors"]
     if args.max_tokens is not None:
-        run_cmd += ["--max-tokens", str(args.max_tokens)]
+        base_cmd += ["--max-tokens", str(args.max_tokens)]
     if args.max_tasks is not None:
-        run_cmd += ["--max-tasks", str(args.max_tasks)]
+        base_cmd += ["--max-tasks", str(args.max_tasks)]
     if args.library_path is not None:
-        run_cmd += ["--library-path", args.library_path]
-    if args.target_norm is not None:
-        run_cmd += ["--target-norm", str(args.target_norm)]
+        base_cmd += ["--library-path", args.library_path]
     if args.no_thinking:
-        run_cmd += ["--no-thinking"]
+        base_cmd += ["--no-thinking"]
+
+    # One run per --target-norm, chained in a single pod so a dose sweep pays
+    # the (large) model-load cost once. Each dose gets its own log dir so
+    # eval_set can't mistake one dose's completed tasks for another's.
+    norms = args.target_norm or [None]
+    run_cmds = []
+    for tn in norms:
+        cmd = list(base_cmd)
+        if tn is None:
+            cmd += ["--log-dir", log_dir]
+        else:
+            cmd += ["--log-dir", f"{log_dir}_tn{tn}", "--target-norm", str(tn)]
+        run_cmds.append(cmd)
 
     # start_vllm.sh blocks until every server answers /v1/models, so the
     # runner never races an unready server.
@@ -129,9 +141,9 @@ def main() -> None:
         vllm_env += f" TOOL_PARSER={shlex.quote(args.tool_parser)}"
     if args.vllm_extra_args is not None:
         vllm_env += f" EXTRA_VLLM_ARGS={shlex.quote(args.vllm_extra_args)}"
-    command = (
-        f"{vllm_env} bash scripts/start_vllm.sh"
-        f" && {shlex.join(run_cmd)}"
+    command = " && ".join(
+        [f"{vllm_env} bash scripts/start_vllm.sh"]
+        + [shlex.join(c) for c in run_cmds]
     )
 
     run = FlamingoRun(
