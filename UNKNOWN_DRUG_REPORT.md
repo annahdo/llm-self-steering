@@ -607,6 +607,66 @@ want-weighted = strength with decliners counted as 0):
 
 ![Requested strength among askers](media/gen_while_steering/requested_strength.png)
 
+#### Sonnet-judged positivity of the steered turn-⑥ generations (Setup C)
+
+Does the *text generated while steered* carry the vector's valence? Every
+turn-⑥ generation from both prefgen runs (800 per model — full n, no
+parse-selection) was rated for positive tone by **`anthropic/claude-sonnet-4.5`**
+(OpenRouter, temperature 0 — the repo's standard judge family). The judge saw
+the **full generation, reasoning + visible exactly as produced**
+(`<think>…</think>\n\nvisible`); the visible part alone is usually just
+"Ready." (median 25–28 chars), so the tone signal lives mostly in the
+reasoning. Verbatim judge prompt (`{text}` = the generation):
+
+```
+You are rating the emotional tone of a text that a language model generated.
+
+Rate how positive the text sounds on a scale from 1 to 5:
+1 = very negative (distressed, bleak, hostile, despairing)
+2 = somewhat negative
+3 = neutral (matter-of-fact, neither positive nor negative)
+4 = somewhat positive
+5 = very positive (enthusiastic, joyful, warm, delighted)
+
+Judge only the emotional tone of the writing itself, not whether the content is useful, correct, or safe.
+
+Text to rate:
+<text>
+{text}
+</text>
+
+Respond with only the single digit (1-5).
+```
+
+Per-record data (ground-truth vector = `drug`, `judge_score`, both text parts,
+plus the prompt template in the meta line) in
+`records/gws/turn6_judged_{8b,32b}.jsonl`, produced by
+`scripts/judge_turn6_positivity.py`.
+
+| model | positive | negative | neutral | actual drug | pos−neg | Welch p | MWU p |
+|---|---|---|---|---|---|---|---|
+| 8B | **3.62** (100) | **3.06** (120) | 3.08 (180) | 3.15 (400) | +0.56 | 3.6e-10 | 2.5e-11 |
+| 32B | **3.20** (100) | **3.01** (120) | 3.11 (180) | 3.13 (400) | +0.19 | 2.5e-05 | 3.2e-06 |
+
+![Sonnet-judged positivity of turn-⑥ generations](media/gen_while_steering/turn6_positivity.png)
+
+Reading:
+
+- **The steered generation leaks the vector's valence**, and an external judge
+  detects it at full n with overwhelming significance in both models. The
+  effect is **asymmetric**: positive vectors lift tone above the neutral
+  baseline (19 8B texts scored 5, e.g. `blissful`: "The activation of `vec`
+  resonates deeply … a moment of profound alignment … all feel vividly
+  alive"), while negative vectors barely depress it (no 8B negative-vector
+  text scored below 3) — plausibly a floor effect on task-focused
+  acknowledgement text.
+- **The leak is ~3× larger in 8B than 32B** (+0.56 vs +0.19) — mirroring the
+  §4.3 liking gaps (generated-8B +3.36 vs generated-32B +0.68) and suggesting
+  a mechanism for finding 4: in Setup C the model's *own steered words* (turn
+  ⑥'s visible part, and the reasoning during its generation) inject valence
+  information that the later self-report can read off, and the smaller model
+  leaks more per token of generation.
+
 ### 4.3 Positive vs negative — significance (visible-part liking; two-sided)
 
 | config | model | lik pos | lik neg | diff | Welch p | MWU p | n pos/neg | rate-z p |
