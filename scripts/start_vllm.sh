@@ -72,7 +72,10 @@ for i in $(seq 0 $((N_SERVERS - 1))); do
   start=$(date +%s)
   while ! curl -fs "http://localhost:$port/v1/models" >/dev/null 2>&1; do
     if ! tmux has-session -t "vllm$i" 2>/dev/null; then
-      echo "  port $port: tmux session vllm$i died — check logs/vllm_$i.log" >&2
+      # Batch pods are reaped with their logs, so print the failure here —
+      # otherwise the only record of *why* vllm died disappears with the pod.
+      echo "  port $port: tmux session vllm$i died — last 60 log lines:" >&2
+      tail -60 "logs/vllm_$i.log" >&2 || echo "  (no log file written)" >&2
       exit 1
     fi
     sleep 5
