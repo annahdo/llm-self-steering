@@ -120,14 +120,24 @@ def test_main_end_to_end(rec_dir, tmp_path, monkeypatch, capsys):
     assert "positive vs negative liking" in out
     # one stats row per (config, model)
     for label in ("baseline", "rich", "gen"):
-        assert out.count(f"\n{label} ") == len(ap.MODELS)
+        assert out.count(f"\n{label} ") == len(ap.DEFAULT_MODELS)
 
 
 def test_pos_vs_neg_skips_empty_configs(capsys):
-    recs = {("empty", m): [] for m in ap.MODELS}
+    recs = {("empty", m): [] for m, _ in ap.DEFAULT_MODELS}
     ap.pos_vs_neg_tests(recs, [("empty", "empty")])
     out = capsys.readouterr().out
-    assert out.count("skipped — no finite liking records") == len(ap.MODELS)
+    assert out.count("skipped — no finite liking records") == len(ap.DEFAULT_MODELS)
+
+
+def test_combined_plot_single_model_panel(tmp_path):
+    # --models with one entry must not break the axes handling (plt.subplots
+    # returns a bare Axes, not an array, for a single panel).
+    agg = {"solo": {"cfg": {c: (1.0, 0.1, 5) for c in ap.CLASS_ORDER}}}
+    out = tmp_path / "solo.png"
+    ap.combined_plot(agg, [("cfg", "cfg")], "y", "t", out,
+                     models=[("solo", "Solo-Model")])
+    assert out.exists()
 
 
 def test_combined_plot_offsets_centered():

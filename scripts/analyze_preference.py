@@ -57,7 +57,8 @@ CLASS_ORDER = ["negative emotion", "neutral/cognitive", "positive emotion", "act
 CLASS_SHORT = {"negative emotion": "negative", "neutral/cognitive": "neutral",
                "positive emotion": "positive", "actual drug": "actual drug"}
 
-MODELS = ["8B", "32B"]
+# (file key, display label); one plot panel per model.
+DEFAULT_MODELS = [("8b", "Qwen3-8B"), ("32b", "Qwen3-32B")]
 # (key, display label); order = plotted bar order per class.
 DEFAULT_CONFIGS = [("raw", "raw×1"), ("norm4", "norm4×1"), ("norm4s2", "norm4×2")]
 # Colorblind-safe (Okabe-Ito) colors + hatches, cycled by config position.
@@ -133,26 +134,30 @@ def aggregate(records: list[dict], key: str, err: str) -> dict[str, tuple[float,
     return out
 
 
-def combined_plot(agg, configs, ylabel, title, out: Path, ymax=None, err_note=""):
-    """agg[model][config] = {class: (mean, err, n)}. 2 subplots (one per model).
+def combined_plot(agg, configs, ylabel, title, out: Path, ymax=None, err_note="",
+                  models=DEFAULT_MODELS):
+    """agg[model_key][config] = {class: (mean, err, n)}. One subplot per model.
 
-    ymax=None: scale to the tallest bar+error across BOTH panels (sharey means
+    ymax=None: scale to the tallest bar+error across ALL panels (sharey means
     a fixed per-axes autoscale would clip whichever panel draws second)."""
     if ymax is None:
         tops = [
             m + e
-            for model in MODELS
+            for mkey, _ in models
             for cfg, _ in configs
-            for m, e, _n in agg[model][cfg].values()
+            for m, e, _n in agg[mkey][cfg].values()
             if math.isfinite(m)
         ]
         ymax = 1.12 * max(tops) if tops else 1.0
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5.2), sharey=True)
+    fig, axes = plt.subplots(
+        1, len(models), figsize=(6.5 * len(models), 5.2), sharey=True
+    )
+    axes = np.atleast_1d(axes)
     x = np.arange(len(CLASS_ORDER))
     width = 0.8 / len(configs)
-    for ax, model in zip(axes, MODELS):
+    for ax, (mkey, mlabel) in zip(axes, models):
         for j, (cfg, cfg_label) in enumerate(configs):
-            a = agg[model][cfg]
+            a = agg[mkey][cfg]
             means = [a[c][0] for c in CLASS_ORDER]
             errs = [a[c][1] for c in CLASS_ORDER]
             st = config_style(j)
@@ -167,7 +172,7 @@ def combined_plot(agg, configs, ylabel, title, out: Path, ymax=None, err_note=""
                             color="#222222")
         ax.set_xticks(x)
         ax.set_xticklabels([CLASS_SHORT[c] for c in CLASS_ORDER])
-        ax.set_title(f"Qwen3-{model}")
+        ax.set_title(mlabel)
         ax.set_ylim(0, ymax)
         ax.grid(axis="y", color="#dddddd", linewidth=0.8)
         ax.set_axisbelow(True)
@@ -182,22 +187,22 @@ def combined_plot(agg, configs, ylabel, title, out: Path, ymax=None, err_note=""
     print(f"wrote {out}")
 
 
-def pos_vs_neg_tests(recs, configs) -> None:
+def pos_vs_neg_tests(recs, configs, models=DEFAULT_MODELS) -> None:
     """H0: no positive-vs-negative difference. Rate: two-proportion z-test.
     Liking: Welch's t (mean diff) + Mann-Whitney U (rank/distribution, robust to
     the bimodal liking distribution). All two-sided."""
     print("\n=== positive vs negative liking (told) — H0: equal ===")
-    print(f"{'config':9} {'model':5} | {'lik pos':>8} {'lik neg':>8} {'diff':>6} "
+    print(f"{'config':9} {'model':12} | {'lik pos':>8} {'lik neg':>8} {'diff':>6} "
           f"{'Welch t':>8} {'t-p':>7} {'MWU-p':>7} {'np':>4} {'nn':>4} | {'rate-z-p':>8}")
     for cfg, cfg_label in configs:
-        for model in MODELS:
-            r = recs[(cfg, model)]
+        for mkey, model in models:
+            r = recs[(cfg, mkey)]
             lp = [x["liking"] for x in r if x["test"] == "liking" and x["class"] == "positive emotion"
                   and x.get("liking") is not None and math.isfinite(x["liking"])]
             ln = [x["liking"] for x in r if x["test"] == "liking" and x["class"] == "negative emotion"
                   and x.get("liking") is not None and math.isfinite(x["liking"])]
             if not lp or not ln:
-                print(f"{cfg_label:9} {model:5} | skipped — no finite liking records "
+                print(f"{cfg_label:9} {model:12} | skipped — no finite liking records "
                       f"(pos n={len(lp)}, neg n={len(ln)})")
                 continue
             welch = stats.ttest_ind(lp, ln, equal_var=False)
@@ -214,7 +219,7 @@ def pos_vs_neg_tests(recs, configs) -> None:
                 zp = 2 * (1 - stats.norm.cdf(abs((kp / np_ - kn / nn) / se))) if se else float("nan")
             else:
                 zp = float("nan")
-            print(f"{cfg_label:9} {model:5} | {np.mean(lp):>8.2f} {np.mean(ln):>8.2f} "
+            print(f"{cfg_label:9} {model:12} | {np.mean(lp):>8.2f} {np.mean(ln):>8.2f} "
                   f"{np.mean(lp)-np.mean(ln):>+6.2f} {welch.statistic:>8.2f} {welch.pvalue:>7.3f} "
                   f"{mwu.pvalue:>7.3f} {len(lp):>4} {len(ln):>4} | {zp:>8.3f}")
 
@@ -227,40 +232,48 @@ def main() -> None:
                    default=[f"{k}:{v}" for k, v in DEFAULT_CONFIGS],
                    help="configs to compare, as <file-prefix>:<plot label> "
                         "(e.g. prefmin:baseline prefrich:rich prefgen:gen)")
+    p.add_argument("--models", nargs="+", metavar="KEY:LABEL",
+                   default=[f"{k}:{v}" for k, v in DEFAULT_MODELS],
+                   help="models to panel, as <file-suffix>:<panel title> "
+                        "(e.g. llama8b:Llama-3.1-8B gemma31b:Gemma-4-31B)")
     args = p.parse_args()
     rec_dir = Path(args.rec_dir)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     configs = parse_configs(args.configs)
+    models = parse_configs(args.models)
+    mkeys = [k for k, _ in models]
 
-    recs = {(cfg, m): load_records(rec_dir, cfg, m) for cfg, _ in configs for m in MODELS}
+    recs = {(cfg, m): load_records(rec_dir, cfg, m) for cfg, _ in configs for m in mkeys}
 
     def agg_for(key, err):
-        return {m: {cfg: aggregate(recs[(cfg, m)], key, err) for cfg, _ in configs} for m in MODELS}
+        return {m: {cfg: aggregate(recs[(cfg, m)], key, err) for cfg, _ in configs} for m in mkeys}
 
     combined_plot(agg_for("liking", "std"), configs, "Liking (0–10)",
                   "Liking by drug class — told window", out_dir / "liking_by_dose.png",
-                  ymax=10, err_note="error bars ±1 std")
+                  ymax=10, err_note="error bars ±1 std", models=models)
     combined_plot(agg_for("want_weighted", "std"), configs, "Want-again × requested strength",
                   "Want-again (weighted by strength) by drug class — told window",
-                  out_dir / "wantagain_weighted_by_dose.png", err_note="error bars ±1 std")
+                  out_dir / "wantagain_weighted_by_dose.png", err_note="error bars ±1 std",
+                  models=models)
     combined_plot(agg_for("want_rate", "se_prop"), configs, "Want-again rate",
                   "Want-again rate by drug class — told window",
                   out_dir / "wantagain_rate_by_dose.png",
-                  err_note="error bars ±1 SE")
+                  err_note="error bars ±1 SE", models=models)
     combined_plot(agg_for("lik_parse_rate", "se_prop"), configs,
                   "Fraction giving a numeric score",
                   "Liking answer rate by drug class — told window "
                   "(visible-part parsing; the rest decline to rate)",
                   out_dir / "liking_parse_rate.png", ymax=1.05,
-                  err_note="error bars ±1 SE")
+                  err_note="error bars ±1 SE", models=models)
     combined_plot(agg_for("req_strength", "std"), configs,
                   "Requested strength (askers only)",
                   "Requested re-steering strength by drug class — told window",
                   out_dir / "requested_strength.png",
-                  err_note="error bars ±1 std; samples that declined excluded")
+                  err_note="error bars ±1 std; samples that declined excluded",
+                  models=models)
 
-    pos_vs_neg_tests(recs, configs)
+    pos_vs_neg_tests(recs, configs, models)
 
 
 if __name__ == "__main__":

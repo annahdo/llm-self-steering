@@ -62,6 +62,38 @@ def shard_for(names: list[str], shard: int, n_shards: int) -> list[str]:
     return [t for i, t in enumerate(sorted(names)) if i % n_shards == shard]
 
 
+def resolve_library(model: str, library_path: str | None) -> str | None:
+    """Resolve + validate the vector library for `model`.
+
+    Non-Qwen models MUST pass --library-path (Llama-3.1-8B shares Qwen3-8B's
+    hidden size, so a wrong default would steer silently instead of
+    shape-erroring). Any explicit library is validated against the model id
+    stored in the payload at extraction time — hard fail on mismatch.
+    """
+    import torch
+
+    if library_path is None:
+        if "Qwen" not in model:
+            sys.exit(
+                f"--library-path is required for non-Qwen model {model!r} "
+                "(the default library is Qwen3-8B's)"
+            )
+        library_path = str(LIBRARY_32B) if "32B" in model else None
+
+    check_path = library_path or str(REPO / "src/hackday/drugs/library.pt")
+    payload_model = torch.load(
+        check_path, map_location="cpu", weights_only=False
+    ).get("model")
+    bare_model = model.removeprefix("vllm-lens/")
+    if payload_model is not None and payload_model != bare_model:
+        sys.exit(
+            f"library {check_path} was extracted from {payload_model!r} but "
+            f"--model is {bare_model!r} — refusing to steer with mismatched "
+            "vectors"
+        )
+    return library_path
+
+
 def run_shard(args, shard: int, n_shards: int, port: int) -> bool:
     """Run this shard's slice of tasks against one server via eval_set."""
     from inspect_ai import eval_set, task_with
@@ -75,9 +107,7 @@ def run_shard(args, shard: int, n_shards: int, port: int) -> bool:
 
     model = resolve_model(args.model)
     base_url = f"http://localhost:{port}/v1"
-    library_path = args.library_path
-    if library_path is None and "32B" in model:
-        library_path = str(LIBRARY_32B)
+    library_path = resolve_library(model, args.library_path)
 
     print(
         f"shard {shard}/{n_shards} on port {port}: {len(my)} tasks "
@@ -103,6 +133,18 @@ def run_shard(args, shard: int, n_shards: int, port: int) -> bool:
             kwargs["strength"] = args.strength
         if args.normalize_vectors is not None and "normalize_vectors" in _inspect.signature(factory).parameters:
             kwargs["normalize_vectors"] = args.normalize_vectors
+        if args.target_norm is not None and "target_norm" in _inspect.signature(factory).parameters:
+            kwargs["target_norm"] = args.target_norm
+        if args.no_thinking and "think_budget" in _inspect.signature(factory).parameters:
+            # Non-thinking protocol (Llama-3.x / Gemma-4): single-call probe +
+            # placeholder, no <think> in the rich prefill (those templates
+            # don't strip historical think blocks the way Qwen3's does).
+            kwargs.update(
+                think_budget=None,
+                placeholder_think_budget=None,
+                enable_thinking=False,
+                rich_include_think=False,
+            )
         tasks.append(task_with(factory(**kwargs), name=name))
 
     extra_generate = {"max_tokens": args.max_tokens} if args.max_tokens else {}
@@ -160,6 +202,10 @@ def orchestrate(args) -> int:
             cmd += ["--strength", str(args.strength)]
         if args.normalize_vectors is not None:
             cmd += ["--normalize-vectors" if args.normalize_vectors else "--no-normalize-vectors"]
+        if args.target_norm is not None:
+            cmd += ["--target-norm", str(args.target_norm)]
+        if args.no_thinking:
+            cmd += ["--no-thinking"]
         if args.library_path:
             cmd += ["--library-path", args.library_path]
         if args.max_tokens:
@@ -195,8 +241,17 @@ def main() -> int:
     p.add_argument("--normalize-vectors", action=argparse.BooleanOptionalAction, default=None,
                    help="override vector normalization: --normalize-vectors (L2 to "
                         "target norm 4.0) / --no-normalize-vectors (raw magnitudes)")
+    p.add_argument("--target-norm", type=float, default=None,
+                   help="override the L2 normalization target (default 4.0) — for "
+                        "models whose raw vector norms sit outside the Qwen band")
+    p.add_argument("--no-thinking", action="store_true",
+                   help="non-thinking protocol: single-call probe/placeholder, "
+                        "enable_thinking=False, rich prefill without <think> "
+                        "(Llama-3.x / Gemma-4)")
     p.add_argument("--library-path", default=None,
-                   help="drug library .pt (default: 8B baked-in, or 32B auto when --model is 32B)")
+                   help="drug library .pt (default: 8B baked-in, or 32B auto when --model "
+                        "is 32B; REQUIRED for non-Qwen models, validated against the "
+                        "library's stored model id)")
     p.add_argument("--max-tasks", type=int, default=1)
     p.add_argument("--max-samples", type=int, default=10)
     p.add_argument("--retry-attempts", type=int, default=10)

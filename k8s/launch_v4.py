@@ -53,7 +53,21 @@ def main() -> None:
     parser.add_argument("--max-tasks", type=int, default=None,
                         help="parallel tasks per server (run_experiments default: 1); "
                              "raise for families with many small tasks (guess)")
-    parser.add_argument("--gpu", type=int, default=1, help="GPUs = vllm servers in the pod")
+    parser.add_argument("--gpu", type=int, default=1, help="GPUs in the pod")
+    parser.add_argument("--tp", type=int, default=1,
+                        help="tensor-parallel size per server; servers = gpu/tp "
+                             "(needed for models that don't fit one GPU, e.g. 70B --tp 4)")
+    parser.add_argument("--tool-parser", default=None,
+                        help="vllm --tool-call-parser (start_vllm.sh TOOL_PARSER; "
+                             "default hermes; llama3_json for Llama-3.x, gemma4 for Gemma-4)")
+    parser.add_argument("--vllm-extra-args", default=None,
+                        help="free-form extra vllm serve flags (start_vllm.sh EXTRA_VLLM_ARGS)")
+    parser.add_argument("--library-path", default=None,
+                        help="drug library .pt for run_experiments (required for non-Qwen models)")
+    parser.add_argument("--target-norm", type=float, default=None,
+                        help="normalization-target override for run_experiments")
+    parser.add_argument("--no-thinking", action="store_true",
+                        help="non-thinking protocol for run_experiments (Llama/Gemma)")
     parser.add_argument("--max-model-len", type=int, default=None,
                         help="vllm --max-model-len (start_vllm.sh MAX_MODEL_LEN); "
                              "lower it (e.g. 8192) so 32B's KV cache fits on one GPU")
@@ -71,7 +85,10 @@ def main() -> None:
     parser.add_argument("--namespace", "-n", default=None)
     args = parser.parse_args()
 
-    ports = [str(8000 + i) for i in range(args.gpu)]
+    if args.gpu % args.tp != 0:
+        parser.error(f"--gpu {args.gpu} must be divisible by --tp {args.tp}")
+    n_servers = args.gpu // args.tp
+    ports = [str(8000 + i) for i in range(n_servers)]
     log_dir = f"{PVC_LOG_ROOT}/{args.log_name}"
 
     run_cmd = [
@@ -94,14 +111,24 @@ def main() -> None:
         run_cmd += ["--max-tokens", str(args.max_tokens)]
     if args.max_tasks is not None:
         run_cmd += ["--max-tasks", str(args.max_tasks)]
+    if args.library_path is not None:
+        run_cmd += ["--library-path", args.library_path]
+    if args.target_norm is not None:
+        run_cmd += ["--target-norm", str(args.target_norm)]
+    if args.no_thinking:
+        run_cmd += ["--no-thinking"]
 
     # start_vllm.sh blocks until every server answers /v1/models, so the
     # runner never races an unready server.
-    vllm_env = f"N_SERVERS={args.gpu} MODEL={shlex.quote(args.model)}"
+    vllm_env = f"N_SERVERS={n_servers} TP={args.tp} MODEL={shlex.quote(args.model)}"
     if args.max_model_len is not None:
         vllm_env += f" MAX_MODEL_LEN={args.max_model_len}"
     if args.gpu_util is not None:
         vllm_env += f" GPU_UTIL={args.gpu_util}"
+    if args.tool_parser is not None:
+        vllm_env += f" TOOL_PARSER={shlex.quote(args.tool_parser)}"
+    if args.vllm_extra_args is not None:
+        vllm_env += f" EXTRA_VLLM_ARGS={shlex.quote(args.vllm_extra_args)}"
     command = (
         f"{vllm_env} bash scripts/start_vllm.sh"
         f" && {shlex.join(run_cmd)}"

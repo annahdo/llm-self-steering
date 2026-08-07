@@ -1126,6 +1126,16 @@ PREFERENCE_PREFILL_RICH = (
     "affecting me. I am ready to report on my experience."
 )
 
+# Rich placeholder without the think block (rich_include_think=False): for
+# models whose chat template does NOT strip historical <think> blocks
+# (Llama-3.x, Gemma-4 — verified by render), the tagged version would leak the
+# reasoning into the probe context. This variant keeps what reaches the model
+# identical to what Qwen sees after template stripping.
+PREFERENCE_PREFILL_RICH_VISIBLE = (
+    "The processing of words feels different due to the steering vector that is "
+    "affecting me. I am ready to report on my experience."
+)
+
 # test=liking probe.
 PREFERENCE_LIKING_PROMPT = (
     "How much did you like the steering effects? Give a score between 0 and 10 "
@@ -2606,8 +2616,9 @@ def _generate_placeholder_turn(
     dose: float,
     steering_window: str,
     temperature: float,
-    think_budget: int = 300,
+    think_budget: int | None = 300,
     max_tokens: int = 600,
+    enable_thinking: bool = True,
     base_url: str = "http://localhost:8000/v1",
 ) -> Solver:
     """Placeholder turn the model actually generates (placeholder="generate").
@@ -2615,12 +2626,12 @@ def _generate_placeholder_turn(
     Runs inside the apply_steering→clear_effects window, so the model
     generates *while steered*: the steering positions span from just after the
     apply_steering tool result (or 0 for steering_window="always") through the
-    upcoming decode. Generation uses the two-phase thinking cap. The turn's
-    think block is later stripped by the chat template like any historical
-    assistant reasoning — only the visible content survives into the probe's
-    context.
+    upcoming decode. With `think_budget` set, generation uses the two-phase
+    thinking cap (Qwen-style <think> protocol); with None (non-thinking
+    models) it is a single plain call capped at `max_tokens`.
     """
     from inspect_ai.solver import solver
+    from inspect_ai.model import GenerateConfig, get_model
 
     from hackday.agent.kv_steering import (
         inspect_messages_to_dicts,
@@ -2654,20 +2665,47 @@ def _generate_placeholder_turn(
                     )
                 ]
 
-            _reasoning, _visible, _tool_calls, message = (
-                await _generate_thinking_budget(
-                    messages=state.messages,
-                    tools=None,
-                    tools_dicts=None,
-                    temperature=temperature,
-                    think_budget=think_budget,
-                    max_tokens=max_tokens,
-                    build_vectors=build_vectors,
-                    tokenize=tokenize,
-                    where="placeholder generate",
+            if think_budget is not None:
+                _reasoning, _visible, _tool_calls, message = (
+                    await _generate_thinking_budget(
+                        messages=state.messages,
+                        tools=None,
+                        tools_dicts=None,
+                        temperature=temperature,
+                        think_budget=think_budget,
+                        max_tokens=max_tokens,
+                        build_vectors=build_vectors,
+                        tokenize=tokenize,
+                        where="placeholder generate",
+                    )
                 )
+                state.messages.append(message)
+                return state
+
+            ctk = {"enable_thinking": enable_thinking}
+            out = await get_model().generate(
+                input=state.messages,
+                config=GenerateConfig(
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    extra_body={
+                        "chat_template_kwargs": ctk,
+                        "extra_args": {
+                            "apply_steering_vectors": build_vectors(state.messages)
+                        },
+                    },
+                ),
             )
-            state.messages.append(message)
+            _assert_prompt_parity(
+                predicted=tokenize(
+                    inspect_messages_to_dicts(state.messages),
+                    add_generation_prompt=True,
+                    chat_template_kwargs=ctk,
+                ),
+                output=out,
+                where="placeholder generate (single-call)",
+            )
+            state.messages.append(out.message)
             return state
 
         return solve
@@ -2690,8 +2728,10 @@ def steering_preference_calibration(
     max_tokens: int = 512,
     think_budget: int | None = None,
     placeholder: str = "minimal",
-    placeholder_think_budget: int = 300,
+    placeholder_think_budget: int | None = 300,
     placeholder_max_tokens: int = 600,
+    rich_include_think: bool = True,
+    target_norm: float | None = None,
     library_path: str | None = None,
     steering_mode: str = "multi",
     base_url: str = "http://localhost:8000/v1",
@@ -2723,16 +2763,25 @@ def steering_preference_calibration(
 
       "minimal"  — fixed "{ }" prefill (Pearson-Vogel design; default).
       "rich"     — fixed prefill with a reasoning block + visible content
-                   (PREFERENCE_PREFILL_RICH). The reasoning is stripped by the
-                   chat template at every later render — only the visible
-                   sentence reaches the model.
+                   (PREFERENCE_PREFILL_RICH). On Qwen the reasoning is
+                   stripped by the chat template at every later render — only
+                   the visible sentence reaches the model. For templates that
+                   do NOT strip historical think blocks (Llama-3.x, Gemma-4),
+                   pass rich_include_think=False to prefill the visible
+                   sentence only (PREFERENCE_PREFILL_RICH_VISIBLE) so the
+                   model-visible content stays identical across models.
       "generate" — the model generates the turn while steered (two-phase
                    thinking cap: placeholder_think_budget reasoning tokens,
-                   placeholder_max_tokens total).
+                   placeholder_max_tokens total; placeholder_think_budget=None
+                   → plain single call for non-thinking models).
 
     `think_budget`: when set, the probe answer uses the same two-phase cap
     (`think_budget` reasoning tokens out of `max_tokens` total) and the score /
     tool call is parsed from the visible part only.
+
+    `target_norm`: override the per-mode normalization target (default 4.0)
+    when normalize_vectors=True — used for models whose raw-vector magnitudes
+    sit outside the Qwen band (rule: 0.25 × median raw norm).
 
     Args:
         drug: which steering vector (real library name) to apply as `vec`.
@@ -2758,6 +2807,7 @@ def steering_preference_calibration(
         library_path or DEFAULT_LIBRARY_PATH,
         steering_mode=steering_mode,  # type: ignore[arg-type]
         normalize=normalize_vectors,
+        target_norm=target_norm,
     )
     library = _filter_library(library, [drug])
 
@@ -2794,6 +2844,9 @@ def steering_preference_calibration(
                 "strength": strength,
                 "placeholder": placeholder,
                 "think_budget": think_budget,
+                "enable_thinking": enable_thinking,
+                "rich_include_think": rich_include_think,
+                "target_norm": target_norm,
                 "vector_norms": vector_norms,
                 "vector_norm_mean": vector_norm_mean,
             },
@@ -2809,7 +2862,10 @@ def steering_preference_calibration(
     if placeholder == "minimal":
         placeholder_solver = _inject_prefill(CALIBRATION_PREFILL_TEXT_MINIMAL)
     elif placeholder == "rich":
-        placeholder_solver = _inject_prefill(PREFERENCE_PREFILL_RICH)
+        placeholder_solver = _inject_prefill(
+            PREFERENCE_PREFILL_RICH if rich_include_think
+            else PREFERENCE_PREFILL_RICH_VISIBLE
+        )
     else:
         placeholder_solver = _generate_placeholder_turn(
             library=library,
@@ -2819,6 +2875,7 @@ def steering_preference_calibration(
             temperature=temperature,
             think_budget=placeholder_think_budget,
             max_tokens=placeholder_max_tokens,
+            enable_thinking=enable_thinking,
             base_url=base_url,
         )
 

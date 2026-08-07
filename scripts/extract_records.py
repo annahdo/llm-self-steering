@@ -84,8 +84,11 @@ def sample_record(task: str, sample) -> dict:
         "drug": md.get("preference_drug"),
         "test": md.get("preference_test"),
         "steering_window": md.get("steering_window"),
-        # older logs predate the placeholder task arg -> null
+        # older logs predate these task args -> null
         "placeholder": md.get("placeholder"),
+        "think_budget": md.get("think_budget"),
+        "rich_include_think": md.get("rich_include_think"),
+        "target_norm": md.get("target_norm"),
         "sample_id": sample.id,
         "epoch": sample.epoch,
     }
@@ -97,8 +100,17 @@ def sample_record(task: str, sample) -> dict:
     return rec
 
 
-def scan_headers(log_dir: Path, task_prefix: str | None) -> tuple[list[LogMeta], int, int]:
-    """Read every .eval header under log_dir. Returns (metas, n_corrupt, n_filtered)."""
+def scan_headers(
+    log_dir: Path,
+    task_prefix: str | None,
+    expect_model: str | None = None,
+) -> tuple[list[LogMeta], int, int]:
+    """Read every .eval header under log_dir. Returns (metas, n_corrupt, n_filtered).
+
+    `expect_model`: hard-fail if any log's model does not contain this string —
+    task names are model-independent, so a mixed or reused log dir would
+    otherwise blend models silently.
+    """
     metas: list[LogMeta] = []
     n_corrupt = 0
     n_filtered = 0
@@ -116,6 +128,11 @@ def scan_headers(log_dir: Path, task_prefix: str | None) -> tuple[list[LogMeta],
             print(f"[warn] skipping corrupt/mid-write log {path}: {e}", file=sys.stderr)
             n_corrupt += 1
             continue
+        if expect_model is not None and expect_model not in header.eval.model:
+            sys.exit(
+                f"{path}: eval model {header.eval.model!r} does not match "
+                f"--expect-model {expect_model!r} — mixed/reused log dir?"
+            )
         task = header.eval.task
         if task_prefix and not task.startswith(task_prefix):
             n_filtered += 1
@@ -139,11 +156,19 @@ def main() -> None:
         "--expect-n",
         type=int,
         default=None,
-        help="expected total record count; mismatch warns loudly (still exits 0)",
+        help="expected total record count; mismatch is a hard failure",
+    )
+    p.add_argument(
+        "--expect-model",
+        default=None,
+        help="substring every log's eval model must contain (hard failure "
+             "otherwise — guards against mixed/reused log dirs)",
     )
     args = p.parse_args()
 
-    metas, n_corrupt, n_filtered = scan_headers(Path(args.log_dir), args.task_prefix)
+    metas, n_corrupt, n_filtered = scan_headers(
+        Path(args.log_dir), args.task_prefix, args.expect_model
+    )
     kept, skipped = pick_latest_logs(metas)
 
     records: list[dict] = []
@@ -181,9 +206,9 @@ def main() -> None:
     for test, n in sorted(per_test.items(), key=lambda kv: str(kv[0])):
         print(f"  test={test}: {n}")
     if args.expect_n is not None and len(records) != args.expect_n:
-        print(
-            f"!!! WARNING: expected {args.expect_n} records, got {len(records)} !!!",
-            file=sys.stderr,
+        sys.exit(
+            f"expected {args.expect_n} records, got {len(records)} — "
+            "incomplete or contaminated log dir"
         )
 
 

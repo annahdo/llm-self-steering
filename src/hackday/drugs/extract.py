@@ -285,6 +285,22 @@ def main() -> None:
         hi = vs[L_hi].norm() if L_hi in vs else float("nan")
         print(f"  {drug:<14} {lo:.2f} / {mid:.2f} / {hi:.2f}")
 
+    # Deterministic raw-norm summary over all (drug, layer) vectors — the
+    # normalization-target decision rule reads this: keep target 4.0 when the
+    # median sits in the Qwen-calibrated band [8, 50], else 0.25 × median.
+    all_norms = torch.tensor([
+        float(v.norm())
+        for vs in vectors_by_drug_layer.values()
+        for v in vs.values()
+    ])
+    raw_norm_summary = {
+        "median": round(float(all_norms.median()), 3),
+        "p25": round(float(all_norms.quantile(0.25)), 3),
+        "p75": round(float(all_norms.quantile(0.75)), 3),
+        "n": int(all_norms.numel()),
+    }
+    print(f"\nRaw-norm summary (all drug×layer vectors): {raw_norm_summary}")
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     save_payload: dict[str, Any] = {
         # New v2 format: {drug_name: {layer_idx: vector}}
@@ -294,6 +310,7 @@ def main() -> None:
         },
         "extraction_layers": args.layers,
         "probe_layer": probe_layer,
+        "raw_norm_summary": raw_norm_summary,
         "model": client.model,
         "stories_per_drug": args.stories_per_drug,
         "library_format_version": 2,

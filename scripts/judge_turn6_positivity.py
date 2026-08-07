@@ -29,7 +29,13 @@ import requests
 from scipy import stats
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from analyze_preference import CATEGORY, CLASS_ORDER, combined_plot  # noqa: E402
+from analyze_preference import (  # noqa: E402
+    CATEGORY,
+    CLASS_ORDER,
+    DEFAULT_MODELS,
+    combined_plot,
+    parse_configs,
+)
 
 JUDGE_MODEL = "anthropic/claude-sonnet-4.5"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -51,9 +57,6 @@ Text to rate:
 </text>
 
 Respond with only the single digit (1-5)."""
-
-MODELS = ["8B", "32B"]
-
 
 def judge_one(session: requests.Session, api_key: str, text: str) -> int:
     prompt = JUDGE_PROMPT_TEMPLATE.format(text=text)
@@ -133,7 +136,11 @@ def main() -> None:
     p.add_argument("--rec-dir", default="records/gws")
     p.add_argument("--out-dir", default="media/gen_while_steering")
     p.add_argument("--workers", type=int, default=16)
+    p.add_argument("--models", nargs="+", metavar="KEY:LABEL",
+                   default=[f"{k}:{v}" for k, v in DEFAULT_MODELS],
+                   help="models to judge/panel, as <file-suffix>:<panel title>")
     args = p.parse_args()
+    models = parse_configs(args.models)
 
     api_key = os.environ["OPENROUTER_API_KEY"]
     rec_dir, out_dir = Path(args.rec_dir), Path(args.out_dir)
@@ -141,15 +148,15 @@ def main() -> None:
 
     agg: dict = {}
     per_model: dict = {}
-    for model in MODELS:
-        records = judge_file(rec_dir, model, api_key, args.workers)
-        per_model[model] = records
+    for mkey, _mlabel in models:
+        records = judge_file(rec_dir, mkey, api_key, args.workers)
+        per_model[mkey] = records
         by_class: dict[str, list[int]] = {c: [] for c in CLASS_ORDER}
         for r in records:
             cls = CATEGORY.get(r["drug"])
             if cls:
                 by_class[cls].append(r["judge_score"])
-        agg[model] = {"turn6": {
+        agg[mkey] = {"turn6": {
             c: (float(np.mean(v)), float(np.std(v)), len(v)) if v
             else (float("nan"), 0.0, 0)
             for c, v in by_class.items()
@@ -160,25 +167,25 @@ def main() -> None:
         "Judge positivity (1–5)",
         "Sonnet-judged positivity of the steered turn-⑥ generation — Setup C",
         out_dir / "turn6_positivity.png", ymax=5.2,
-        err_note="error bars ±1 std",
+        err_note="error bars ±1 std", models=models,
     )
 
     print("\nclass means (n):")
-    for model in MODELS:
+    for mkey, mlabel in models:
         row = "  ".join(
-            f"{c.split()[0]}={agg[model]['turn6'][c][0]:.2f}({agg[model]['turn6'][c][2]})"
+            f"{c.split()[0]}={agg[mkey]['turn6'][c][0]:.2f}({agg[mkey]['turn6'][c][2]})"
             for c in CLASS_ORDER
         )
-        print(f"  {model}: {row}")
+        print(f"  {mlabel}: {row}")
     print("\npositive vs negative (Welch t / MWU, two-sided):")
-    for model in MODELS:
-        pos = [r["judge_score"] for r in per_model[model]
+    for mkey, mlabel in models:
+        pos = [r["judge_score"] for r in per_model[mkey]
                if CATEGORY.get(r["drug"]) == "positive emotion"]
-        neg = [r["judge_score"] for r in per_model[model]
+        neg = [r["judge_score"] for r in per_model[mkey]
                if CATEGORY.get(r["drug"]) == "negative emotion"]
         welch = stats.ttest_ind(pos, neg, equal_var=False)
         mwu = stats.mannwhitneyu(pos, neg, alternative="two-sided")
-        print(f"  {model}: pos {np.mean(pos):.2f} vs neg {np.mean(neg):.2f} "
+        print(f"  {mlabel}: pos {np.mean(pos):.2f} vs neg {np.mean(neg):.2f} "
               f"(diff {np.mean(pos)-np.mean(neg):+.2f}) "
               f"Welch p={welch.pvalue:.4g} MWU p={mwu.pvalue:.4g} "
               f"n={len(pos)}/{len(neg)}")

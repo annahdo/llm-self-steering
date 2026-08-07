@@ -391,6 +391,7 @@ def load_library(
     *,
     steering_mode: SteeringMode = "multi",
     normalize: bool = True,
+    target_norm: float | None = None,
 ) -> DrugLibrary:
     """Load a saved drug library.
 
@@ -410,6 +411,10 @@ def load_library(
     `normalize=False` keeps the raw extracted magnitudes (no L2 rescale to
     `target_norm`) — the vectors are used at whatever size they were saved
     with. Per-drug norms then vary; callers that care should record them.
+
+    `target_norm` overrides the per-mode default (TARGET_NORM_BY_MODE) when
+    normalizing — for models whose raw-vector magnitudes sit outside the band
+    the default was calibrated on.
     """
     path = Path(path)
     saved = torch.load(path, weights_only=False)
@@ -429,7 +434,8 @@ def load_library(
             apply_layers = list(stored_layers)
     else:
         apply_layers = list(STEERING_LAYERS_BY_MODE[steering_mode])
-    target_norm = TARGET_NORM_BY_MODE[steering_mode]
+    if target_norm is None:
+        target_norm = TARGET_NORM_BY_MODE[steering_mode]
 
     def _normalize(v: torch.Tensor) -> torch.Tensor:
         v = v.detach().to(torch.float32)

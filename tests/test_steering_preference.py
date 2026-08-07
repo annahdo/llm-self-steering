@@ -27,6 +27,7 @@ from hackday.agent.state import DrugState  # noqa: E402
 from hackday.agent.task import (  # noqa: E402
     PREFERENCE_PRE_ADMINISTER,
     PREFERENCE_PREFILL_RICH,
+    PREFERENCE_PREFILL_RICH_VISIBLE,
     PREFERENCE_SYSTEM,
     _assert_prompt_parity,
     _message_text,
@@ -319,6 +320,39 @@ def test_placeholder_task_construction(placeholder):
 def test_invalid_placeholder_rejected():
     with pytest.raises(ValueError):
         steering_preference_calibration(drug="focused", placeholder="bogus")
+
+
+def test_rich_visible_variant_is_the_untagged_suffix():
+    # The visible-only rich prefill must be exactly what survives Qwen's
+    # template stripping of the tagged version — same model-visible content.
+    assert PREFERENCE_PREFILL_RICH.split("</think>\n\n", 1)[1] == \
+        PREFERENCE_PREFILL_RICH_VISIBLE
+    assert "<think>" not in PREFERENCE_PREFILL_RICH_VISIBLE
+
+
+def test_nothink_protocol_construction():
+    # Non-thinking models: single-call probe + placeholder, visible-only rich
+    # prefill, metadata records the protocol knobs.
+    task = steering_preference_calibration(
+        drug="focused", test="again", steering_window="told",
+        placeholder="generate", think_budget=None,
+        placeholder_think_budget=None, enable_thinking=False,
+        rich_include_think=False, target_norm=2.5, n_samples=1,
+    )
+    md = task.dataset[0].metadata
+    assert md["think_budget"] is None
+    assert md["enable_thinking"] is False
+    assert md["rich_include_think"] is False
+    assert md["target_norm"] == 2.5
+
+
+def test_target_norm_override_rescales_vectors():
+    task = steering_preference_calibration(
+        drug="focused", test="liking", normalize_vectors=True,
+        target_norm=2.0, n_samples=1,
+    )
+    norms = task.dataset[0].metadata["vector_norms"]
+    assert norms and all(abs(v - 2.0) < 1e-3 for v in norms.values())
 
 
 # --- tokenizer render-parity payloads -------------------------------------------

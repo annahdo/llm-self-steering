@@ -17,6 +17,10 @@
 #   TP             tensor-parallel size per server       (default 1)
 #   MAX_MODEL_LEN  context length                        (default 32768)
 #   GPU_UTIL       vllm --gpu-memory-utilization         (default 0.90)
+#   TOOL_PARSER    vllm --tool-call-parser               (default hermes;
+#                  llama3_json for Llama-3.x, gemma4 for Gemma-4)
+#   EXTRA_VLLM_ARGS  free-form extra vllm serve flags (e.g.
+#                  "--limit-mm-per-prompt image=0,audio=0 --chat-template <path>")
 #
 # The script waits until /v1/models is reachable on every port before exiting.
 # Then run the experiments with: uv run python scripts/run_experiments.py ...
@@ -30,6 +34,8 @@ BASE_PORT=${BASE_PORT:-8000}
 TP=${TP:-1}
 MAX_MODEL_LEN=${MAX_MODEL_LEN:-32768}
 GPU_UTIL=${GPU_UTIL:-0.90}
+TOOL_PARSER=${TOOL_PARSER:-hermes}
+EXTRA_VLLM_ARGS=${EXTRA_VLLM_ARGS:-}
 
 mkdir -p logs
 
@@ -49,8 +55,9 @@ for i in $(seq 0 $((N_SERVERS - 1))); do
   tmux new-session -d -s "$session" \
     "CUDA_VISIBLE_DEVICES=$gpus uv run vllm serve $MODEL \
        --port $port --max-model-len $MAX_MODEL_LEN \
-       --enable-auto-tool-choice --tool-call-parser hermes \
+       --enable-auto-tool-choice --tool-call-parser $TOOL_PARSER \
        --tensor-parallel-size $TP --gpu-memory-utilization $GPU_UTIL \
+       $EXTRA_VLLM_ARGS \
        2>&1 | tee logs/vllm_$i.log"
   echo "  $session: launched on GPU(s) $gpus, port $port"
 done
