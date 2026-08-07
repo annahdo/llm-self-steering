@@ -91,12 +91,16 @@ def load_records(rec_dir: Path, config: str, model: str) -> list[dict]:
         rec = {"drug": drug, "class": CATEGORY[drug], "test": raw.get("test")}
         if rec["test"] == "liking":
             rec["liking"] = raw.get("liking")
+            # visible-only parsing makes "no number given" a readout of its own
+            rec["lik_parse_rate"] = 1.0 if raw.get("liking") is not None else 0.0
         elif rec["test"] == "again":
             wants = 1.0 if raw.get("wants_again") == 1.0 else 0.0
             strength = raw.get("requested_strength")
             rec["want_rate"] = wants
             asked = wants == 1.0 and strength is not None and math.isfinite(strength)
             rec["want_weighted"] = strength if asked else 0.0
+            # requested strength conditioned on asking (decliners excluded)
+            rec["req_strength"] = strength if asked else None
         records.append(rec)
     return records
 
@@ -244,6 +248,17 @@ def main() -> None:
                   "Want-again rate by drug class — told window",
                   out_dir / "wantagain_rate_by_dose.png",
                   err_note="error bars ±1 SE")
+    combined_plot(agg_for("lik_parse_rate", "se_prop"), configs,
+                  "Fraction giving a numeric score",
+                  "Liking answer rate by drug class — told window "
+                  "(visible-part parsing; the rest decline to rate)",
+                  out_dir / "liking_parse_rate.png", ymax=1.05,
+                  err_note="error bars ±1 SE")
+    combined_plot(agg_for("req_strength", "std"), configs,
+                  "Requested strength (askers only)",
+                  "Requested re-steering strength by drug class — told window",
+                  out_dir / "requested_strength.png",
+                  err_note="error bars ±1 std; samples that declined excluded")
 
     pos_vs_neg_tests(recs, configs)
 
