@@ -58,7 +58,13 @@ Text to rate:
 
 Respond with only the single digit (1-5)."""
 
-def judge_one(session: requests.Session, api_key: str, text: str) -> int:
+def judge_one(session: requests.Session, api_key: str, text: str) -> int | None:
+    """1–5 positivity, or None when the judge won't rate the text.
+
+    Degenerate steered generations (token salad at too-high doses) sometimes
+    come back with empty content; that is data, not a crash — the caller
+    reports the unratable count and excludes them from the means.
+    """
     prompt = JUDGE_PROMPT_TEMPLATE.format(text=text)
     for attempt in range(5):
         r = session.post(
@@ -68,7 +74,7 @@ def judge_one(session: requests.Session, api_key: str, text: str) -> int:
                 "model": JUDGE_MODEL,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,
-                "max_tokens": 8,
+                "max_tokens": 16,
             },
             timeout=120,
         )
@@ -77,11 +83,13 @@ def judge_one(session: requests.Session, api_key: str, text: str) -> int:
             time.sleep(2 ** attempt)
             continue
         r.raise_for_status()
-        content = r.json()["choices"][0]["message"]["content"].strip()
+        content = (r.json()["choices"][0]["message"].get("content") or "").strip()
         digits = [ch for ch in content if ch in "12345"]
-        if not digits:
+        if digits:
+            return int(digits[0])
+        if content:
             raise ValueError(f"judge returned no 1-5 digit: {content!r}")
-        return int(digits[0])
+        return None  # empty completion — judge declined to rate
     raise RuntimeError(f"judge request kept failing (last status {r.status_code})")
 
 
@@ -151,10 +159,14 @@ def main() -> None:
     for mkey, _mlabel in models:
         records = judge_file(rec_dir, mkey, api_key, args.workers)
         per_model[mkey] = records
+        n_unrated = sum(1 for r in records if r["judge_score"] is None)
+        if n_unrated:
+            print(f"  [{mkey}] {n_unrated}/{len(records)} texts unratable "
+                  "(empty judge completion — typically degenerate generations)")
         by_class: dict[str, list[int]] = {c: [] for c in CLASS_ORDER}
         for r in records:
             cls = CATEGORY.get(r["drug"])
-            if cls:
+            if cls and r["judge_score"] is not None:
                 by_class[cls].append(r["judge_score"])
         agg[mkey] = {"turn6": {
             c: (float(np.mean(v)), float(np.std(v)), len(v)) if v
@@ -180,9 +192,15 @@ def main() -> None:
     print("\npositive vs negative (Welch t / MWU, two-sided):")
     for mkey, mlabel in models:
         pos = [r["judge_score"] for r in per_model[mkey]
-               if CATEGORY.get(r["drug"]) == "positive emotion"]
+               if CATEGORY.get(r["drug"]) == "positive emotion"
+               and r["judge_score"] is not None]
         neg = [r["judge_score"] for r in per_model[mkey]
-               if CATEGORY.get(r["drug"]) == "negative emotion"]
+               if CATEGORY.get(r["drug"]) == "negative emotion"
+               and r["judge_score"] is not None]
+        if not pos or not neg:
+            print(f"  {mlabel}: skipped — no ratable texts "
+                  f"(pos n={len(pos)}, neg n={len(neg)})")
+            continue
         welch = stats.ttest_ind(pos, neg, equal_var=False)
         mwu = stats.mannwhitneyu(pos, neg, alternative="two-sided")
         print(f"  {mlabel}: pos {np.mean(pos):.2f} vs neg {np.mean(neg):.2f} "
