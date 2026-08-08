@@ -890,8 +890,11 @@ strength, turn-⑥ positivity).
      Qwen3-8B is lift-*only* (+0.54, with no measurable depression).
    - **Largest in both directions**: **Llama-3.1-8B** (+0.99 / −0.47). Its
      depression is ~4× any other model's and its lift is the largest too, so
-     the ratio here is only ~2×. It also has the largest liking gap and the
-     cleanest calibration window.
+     the ratio here is only ~2×. It also has the largest liking gap *among the
+     three §5 models* (+1.62, generated) and the cleanest calibration window.
+     Across all five, Qwen3-8B's generated gap is nominally larger (+3.36) but
+     rests on 15/9 parsed answers per class against Llama-3.1-8B's 50/60, so
+     the two are not comparably reliable (§4.4 selection caveat).
    - **Weak and directionally inverted**: Qwen3-32B (+0.09 n.s. / −0.10
      significant) — depression slightly *exceeds* lift, but both effects are
      small.
